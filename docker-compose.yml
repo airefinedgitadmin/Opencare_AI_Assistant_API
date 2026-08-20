@@ -1,0 +1,13 @@
+services:
+  care-plan-ai-api:
+    build: .
+    image: care-plan-ai-api:local
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
