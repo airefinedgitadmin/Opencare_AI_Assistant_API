@@ -1,0 +1,69 @@
+name: Deploy care-plan-ai-api to Azure Container Apps
+
+# Target: Azure Container Apps, min-replicas=0 (scale-to-zero). Requires three
+# repository secrets to be set before this can run: AZURE_CLIENT_ID,
+# AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # lets you trigger a deploy manually from the Actions tab too
+
+env:
+  RESOURCE_GROUP: rg-oc-careplan-ai
+  ACR_NAME: ocareplanaiacr
+  CONTAINERAPP_NAME: careplan-ai-api
+  IMAGE_NAME: care-plan-ai-api
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: production   # ties this run to a GitHub Environment, if you set one up for approval gating
+    permissions:
+      id-token: write   # required for OIDC login to Azure — no stored secret needed
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC — no client secret stored anywhere)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build image in ACR (no local Docker daemon needed on the runner)
+        run: |
+          az acr build \
+            --registry ${{ env.ACR_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --image ${{ env.IMAGE_NAME }}:latest \
+            .
+
+      - name: Deploy new image to Container App
+        run: |
+          az containerapp update \
+            --name ${{ env.CONTAINERAPP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Verify the deployed app is healthy
+        run: |
+          FQDN=$(az containerapp show \
+            --name ${{ env.CONTAINERAPP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Checking https://$FQDN/healthz"
+          for i in $(seq 1 10); do
+            if curl -sf "https://$FQDN/healthz"; then
+              echo "Healthy."
+              exit 0
+            fi
+            echo "Not ready yet (may be cold-starting from zero), retrying in 15s..."
+            sleep 15
+          done
+          echo "App did not become healthy in time." >&2
+          exit 1
