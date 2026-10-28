@@ -7,21 +7,27 @@ name: Migrate agent memory database (Supabase)
 # own Postgres:
 #   python -m careplan_ai.memory.migrate --create-database
 #
-# Needs one repository secret:
-#   SUPABASE_DB_URL - Supabase session-pooler connection string (port 5432),
-#                     postgresql://postgres.<ref>:<password>@aws-0-eu-west-2.pooler.supabase.com:5432/postgres
+# No database secret in GitHub: the connection settings (CAREPLAN_AI_DB_* /
+# CAREPLAN_AI_MEMORY_DB_URL) are read from the Container App, where
+# scripts/set-container-app-env.ps1 puts them from .env. Needs the same
+# AZURE_* repository variables as deploy.yml.
 
 on:
-  workflow_call:
-    secrets:
-      SUPABASE_DB_URL:
-        required: true
+  workflow_call: {}
   workflow_dispatch: {}
+
+permissions:
+  id-token: write   # OIDC login to Azure
+  contents: read
 
 # Never run two migrations against the same database at once.
 concurrency:
   group: db-migrate-supabase
   cancel-in-progress: false
+
+env:
+  RESOURCE_GROUP: rg-oc-careplan-ai
+  CONTAINER_APP: careplan-ai-api
 
 jobs:
   migrate:
@@ -36,13 +42,37 @@ jobs:
       - name: Install migration runner dependencies
         run: pip install "psycopg[binary]>=3.2" "pydantic-settings>=2.6"
 
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Copies only the database settings from the app into this job's
+      # environment; secret values are masked in the log.
+      - name: Read database settings from the Container App
+        run: |
+          az extension add --name containerapp --upgrade --only-show-errors
+          app=(--name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP")
+          db_vars="^CAREPLAN_AI_(DB_[A-Z]+|MEMORY_DB_URL)$"
+
+          az containerapp show "${app[@]}" \
+            --query "properties.template.containers[0].env[?value!=null].[name, value]" -o tsv |
+          while IFS=$'\t' read -r name value; do
+            [[ "$name" =~ $db_vars ]] && echo "$name=$value" >> "$GITHUB_ENV"
+          done
+
+          az containerapp show "${app[@]}" \
+            --query "properties.template.containers[0].env[?secretRef!=null].[name, secretRef]" -o tsv |
+          while IFS=$'\t' read -r name ref; do
+            [[ "$name" =~ $db_vars ]] || continue
+            value=$(az containerapp secret show "${app[@]}" --secret-name "$ref" --query value -o tsv)
+            echo "::add-mask::$value"
+            echo "$name=$value" >> "$GITHUB_ENV"
+          done
+
       - name: Apply pending migrations
         env:
           PYTHONPATH: src
-          CAREPLAN_AI_MEMORY_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: |
-          if [ -z "$CAREPLAN_AI_MEMORY_DB_URL" ]; then
-            echo "::error::Repository secret SUPABASE_DB_URL is not set"
-            exit 1
-          fi
-          python -m careplan_ai.memory.migrate
+        run: python -m careplan_ai.memory.migrate

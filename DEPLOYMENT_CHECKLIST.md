@@ -69,46 +69,68 @@ az provider register --namespace Microsoft.App
 az provider register --namespace Microsoft.OperationalInsights
 ```
 
-## Service principal for GitHub Actions (needs Owner / User Access Administrator)
+## Azure login for GitHub Actions (OIDC, no stored credentials)
 
-The deploy job logs in to Azure to update the app. Creating the login needs a
-role assignment, so someone with Owner (or User Access Administrator) on the
-resource group runs this once:
+The build and deploy jobs log in to Azure with a short-lived GitHub token, so
+no Azure password is stored anywhere. Uses the managed identity
+`careplan-ai-api-identity`; replace `<org>/<repo>` with the GitHub repository.
 
 ```bash
-az ad sp create-for-rbac \
-  --name "github-careplan-ai-api" \
+# Trust GitHub Actions runs on this repo's main branch
+az identity federated-credential create \
+  --name github-main \
+  --identity-name careplan-ai-api-identity --resource-group rg-oc-careplan-ai \
+  --issuer https://token.actions.githubusercontent.com \
+  --subject repo:<org>/<repo>:ref:refs/heads/main \
+  --audiences api://AzureADTokenExchange
+
+# Needs Owner / User Access Administrator: let it build images and update the app.
+# Scoped to this one resource group, so the pipeline can't touch anything else.
+az role assignment create \
+  --assignee "$(az identity show --name careplan-ai-api-identity --resource-group rg-oc-careplan-ai --query principalId -o tsv)" \
   --role Contributor \
-  --scopes /subscriptions/e393d081-6f39-4f62-89f3-795a97ce7a72/resourceGroups/rg-oc-careplan-ai \
-  --json-auth
+  --scope /subscriptions/e393d081-6f39-4f62-89f3-795a97ce7a72/resourceGroups/rg-oc-careplan-ai
 ```
 
-The whole JSON it prints is the `AZURE_CREDENTIALS` secret. The scope is just
-this one resource group, so the pipeline can't touch anything else.
+## GitHub variables and secrets
 
-## GitHub secrets
+**Repo → Settings → Secrets and variables → Actions.** These three go under
+**Variables** (they aren't secret):
 
-**Repo → Settings → Secrets and variables → Actions → New repository secret.**
-
-| Secret | Value |
+| Variable | Value |
 |---|---|
-| `AZURE_CREDENTIALS` | JSON from the service principal step |
-| `ACR_USERNAME` | `az acr credential show --name ocareplanaiacr --query username -o tsv` |
-| `ACR_PASSWORD` | `az acr credential show --name ocareplanaiacr --query "passwords[0].value" -o tsv` |
-| `SUPABASE_DB_URL` | Supabase → Connect → Session pooler (port 5432) URI, with the password filled in |
-| `CAREPLAN_AI_API_KEY` | New random value (`openssl rand -hex 32`). Set the **same** value as `careplan-ai-api.key` in the Java backend's config, or the two can't authenticate to each other |
-| `AZURE_OPENAI_API_KEY` | Azure portal → the OpenAI resource → Keys and Endpoint |
-| `AZURE_OPENAI_ENDPOINT` | `https://<resource>.openai.azure.com` |
-| `PINECONE_API_KEY` | Optional, only if `CAREPLAN_AI_LIBRARY_PROVIDER` is switched to `pinecone` |
+| `AZURE_CLIENT_ID` | `az identity show --name careplan-ai-api-identity --resource-group rg-oc-careplan-ai --query clientId -o tsv` |
+| `AZURE_TENANT_ID` | `az account show --query tenantId -o tsv` |
+| `AZURE_SUBSCRIPTION_ID` | `e393d081-6f39-4f62-89f3-795a97ce7a72` |
+
+No repository secrets are needed: the migrate job reads the database settings
+from the Container App (below).
+
+## App settings (on the Container App, not in GitHub)
+
+The app's `CAREPLAN_AI_*` settings and secrets live on the Container App
+itself; the pipeline only swaps the image, so they carry over on every
+deploy. Set them from a `.env` file (same format as `.env.example`):
+
+```powershell
+.\scripts\set-container-app-env.ps1 -EnvFile .env
+```
+
+Secret values (`API_KEY`, `AZURE_OPENAI_API_KEY`, `DB_PASSWORD`,
+`MEMORY_DB_URL`, `PINECONE_API_KEY`) go into the app's secret store; the rest
+become plain env vars, and `CAREPLAN_AI_ENVIRONMENT` is set to `staging`.
+`CAREPLAN_AI_API_KEY` must match `careplan-ai-api.key` in the Java backend's
+config, or the two can't authenticate to each other.
 
 Never put a real key in this file, `.env.example` or any other tracked file.
 
 ## Deploying
 
 - **Normally:** push or merge to `main`.
-- **Re-deploy without a code change** (for example after rotating a secret):
+- **Re-deploy without a code change:**
   Repo → Actions → *Test, build and deploy care-plan-ai-api* → Run workflow.
-- **Changing a setting:** edit the `--set-env-vars` list in `deploy.yml`.
+- **Changing a setting or rotating a secret:** update `.env` and re-run
+  `scripts/set-container-app-env.ps1` (it restarts the app so new values apply).
 - **Rollback:** Container Apps keeps old revisions. Either revert the commit
   on `main`, or point the app at an older image straight away:
   ```bash

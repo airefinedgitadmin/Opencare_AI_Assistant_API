@@ -5,21 +5,27 @@ name: Test, build and deploy care-plan-ai-api
 # Nothing reaches Azure unless the tests pass, and the new revision only goes
 # live after the database migrations have been applied.
 #
-# Repository secrets (Settings -> Secrets and variables -> Actions), see
-# DEPLOYMENT_CHECKLIST.md for how to get each one:
-#   AZURE_CREDENTIALS       service principal JSON, Contributor on rg-oc-careplan-ai
-#   ACR_USERNAME            registry admin username
-#   ACR_PASSWORD            registry admin password
-#   SUPABASE_DB_URL         agent memory database (also used by db-migrate.yml)
-#   CAREPLAN_AI_API_KEY     shared secret the Java backend sends as X-Api-Key
-#   AZURE_OPENAI_API_KEY
-#   AZURE_OPENAI_ENDPOINT
-#   PINECONE_API_KEY        optional - only when CAREPLAN_AI_LIBRARY_PROVIDER=pinecone
+# Azure login is OIDC (no stored Azure credentials). Repository variables
+# (Settings -> Secrets and variables -> Actions -> Variables):
+#   AZURE_CLIENT_ID         identity with a federated credential for this repo's
+#                           main branch, Contributor on rg-oc-careplan-ai
+#   AZURE_TENANT_ID
+#   AZURE_SUBSCRIPTION_ID
+#
+# No repository secrets. The app's own settings and secrets (CAREPLAN_AI_*,
+# including the database the migrate job uses) live on the Container App in
+# Azure, not here: this pipeline only swaps the image. Change them in the
+# portal (careplan-ai-api -> Containers -> Environment variables / Secrets) or
+# with `az containerapp update --set-env-vars` - see DEPLOYMENT_CHECKLIST.md.
 
 on:
   push:
     branches: [main]
   workflow_dispatch: {}
+
+permissions:
+  id-token: write   # OIDC login to Azure
+  contents: read
 
 # One deploy at a time; a newer push waits rather than cancelling a live rollout.
 concurrency:
@@ -27,6 +33,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  ACR_NAME: ocareplanaiacr
   REGISTRY: ocareplanaiacr.azurecr.io
   IMAGE: care-plan-ai-api
   RESOURCE_GROUP: rg-oc-careplan-ai
@@ -66,8 +73,6 @@ jobs:
   migrate:
     needs: test
     uses: ./.github/workflows/db-migrate.yml
-    secrets:
-      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
 
   build:
     needs: test
@@ -75,85 +80,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Log in to Azure Container Registry
-        uses: docker/login-action@v3
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      # Tagged with the commit SHA so every deploy is a distinct, traceable
-      # image (and a rollback is just redeploying an older tag); :latest is
-      # kept for manual use.
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE }}:latest
+      # Built inside ACR itself (no Docker daemon or registry password on the
+      # runner). Tagged with the commit SHA so every deploy is a distinct,
+      # traceable image (and a rollback is just redeploying an older tag);
+      # :latest is kept for manual use.
+      - name: Build image in ACR
+        run: |
+          az acr build \
+            --registry "$ACR_NAME" --resource-group "$RESOURCE_GROUP" \
+            --image "$IMAGE:${{ github.sha }}" \
+            --image "$IMAGE:latest" \
+            .
 
   deploy:
     needs: [build, migrate]
     runs-on: ubuntu-latest
     steps:
-      - name: Azure login
+      - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Install Container Apps CLI extension
         run: az extension add --name containerapp --upgrade --only-show-errors
 
-      # Secrets live in the Container App's own secret store; env vars below
-      # only reference them (secretref:). GitHub is the single source of truth,
-      # so rotating a key = update the GitHub secret and re-run this workflow.
-      - name: Set app secrets
-        env:
-          CAREPLAN_AI_API_KEY: ${{ secrets.CAREPLAN_AI_API_KEY }}
-          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
-        run: |
-          for name in CAREPLAN_AI_API_KEY AZURE_OPENAI_API_KEY AZURE_OPENAI_ENDPOINT SUPABASE_DB_URL; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Repository secret $name is not set"
-              exit 1
-            fi
-          done
-          secrets=(
-            "careplan-api-key=$CAREPLAN_AI_API_KEY"
-            "openai-api-key=$AZURE_OPENAI_API_KEY"
-            "openai-endpoint=$AZURE_OPENAI_ENDPOINT"
-            "memory-db-url=$SUPABASE_DB_URL"
-          )
-          if [ -n "$PINECONE_API_KEY" ]; then
-            secrets+=("pinecone-api-key=$PINECONE_API_KEY")
-          fi
-          az containerapp secret set \
-            --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
-            --secrets "${secrets[@]}" --only-show-errors --output none
-
+      # Only the image changes; the env vars and secrets already on the app
+      # (set in Azure, see DEPLOYMENT_CHECKLIST.md) carry over to the new revision.
       - name: Deploy new revision
         run: |
           az containerapp update \
             --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
             --image "$REGISTRY/$IMAGE:${{ github.sha }}" \
             --min-replicas 0 --max-replicas 2 \
-            --set-env-vars \
-              CAREPLAN_AI_ENVIRONMENT=staging \
-              CAREPLAN_AI_LOG_LEVEL=INFO \
-              CAREPLAN_AI_API_KEY=secretref:careplan-api-key \
-              CAREPLAN_AI_AZURE_OPENAI_API_KEY=secretref:openai-api-key \
-              CAREPLAN_AI_AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
-              CAREPLAN_AI_AZURE_OPENAI_DEPLOYMENT=gpt-5 \
-              CAREPLAN_AI_AZURE_OPENAI_API_VERSION=2024-12-01-preview \
-              CAREPLAN_AI_MODEL_ID=gpt-5 \
-              CAREPLAN_AI_LLM_TEMPERATURE=1 \
-              CAREPLAN_AI_MEMORY_DB_URL=secretref:memory-db-url \
-              CAREPLAN_AI_LIBRARY_PROVIDER=none \
             --only-show-errors --output none
 
       - name: Health check
