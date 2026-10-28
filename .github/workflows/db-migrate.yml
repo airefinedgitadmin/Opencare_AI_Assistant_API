@@ -1,0 +1,48 @@
+name: Migrate agent memory database (Supabase)
+
+# The ONLY way schema changes reach Supabase. Runs as a step of deploy.yml on
+# every push to main (before the new app revision goes live), and can be run on
+# its own from Actions -> Run workflow. Already-applied migrations are skipped,
+# so re-running is safe. Locally, developers run the same runner against their
+# own Postgres:
+#   python -m careplan_ai.memory.migrate --create-database
+#
+# Needs one repository secret:
+#   SUPABASE_DB_URL - Supabase session-pooler connection string (port 5432),
+#                     postgresql://postgres.<ref>:<password>@aws-0-eu-west-2.pooler.supabase.com:5432/postgres
+
+on:
+  workflow_call:
+    secrets:
+      SUPABASE_DB_URL:
+        required: true
+  workflow_dispatch: {}
+
+# Never run two migrations against the same database at once.
+concurrency:
+  group: db-migrate-supabase
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install migration runner dependencies
+        run: pip install "psycopg[binary]>=3.2" "pydantic-settings>=2.6"
+
+      - name: Apply pending migrations
+        env:
+          PYTHONPATH: src
+          CAREPLAN_AI_MEMORY_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$CAREPLAN_AI_MEMORY_DB_URL" ]; then
+            echo "::error::Repository secret SUPABASE_DB_URL is not set"
+            exit 1
+          fi
+          python -m careplan_ai.memory.migrate

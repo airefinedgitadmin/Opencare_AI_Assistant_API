@@ -12,12 +12,15 @@ from fastapi import FastAPI
 from slowapi.middleware import SlowAPIMiddleware
 
 from careplan_ai.api.routers.care_plan import router as care_plan_router
+from careplan_ai.api.routers.care_plan_sessions import router as care_plan_sessions_router
 from careplan_ai.api.routers.health import router as health_router
+from careplan_ai.api.routers.library import router as library_router
 from careplan_ai.core.config import get_settings
 from careplan_ai.core.correlation import CorrelationIdMiddleware
 from careplan_ai.core.exception_handlers import register_exception_handlers
 from careplan_ai.core.logging import configure_logging, get_logger
 from careplan_ai.core.rate_limit import limiter
+from careplan_ai.memory.store import get_session_store
 
 logger = get_logger(__name__)
 
@@ -26,7 +29,14 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
-    logger.info("service_starting", environment=settings.environment)
+    logger.info(
+        "service_starting",
+        environment=settings.environment,
+        agent_primary_model=settings.agent_primary_model_id,
+        agent_fallback_model=settings.agent_fallback_model_id,
+        agent_memory=get_session_store().backend,
+        style_library=settings.library_provider,
+    )
     yield
     logger.info("service_stopping")
 
@@ -44,4 +54,6 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     app.include_router(health_router)
     app.include_router(care_plan_router)
+    app.include_router(care_plan_sessions_router)
+    app.include_router(library_router)
     return app

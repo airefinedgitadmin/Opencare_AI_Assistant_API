@@ -1,69 +1,174 @@
-name: Deploy care-plan-ai-api to Azure Container Apps
+name: Test, build and deploy care-plan-ai-api
 
-# Target: Azure Container Apps, min-replicas=0 (scale-to-zero). Requires three
-# repository secrets to be set before this can run: AZURE_CLIENT_ID,
-# AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID.
+# Push to main (or Actions -> Run workflow) runs the whole pipeline:
+#   test -> migrate Supabase -> build + push image -> deploy to Container Apps
+# Nothing reaches Azure unless the tests pass, and the new revision only goes
+# live after the database migrations have been applied.
+#
+# Repository secrets (Settings -> Secrets and variables -> Actions), see
+# DEPLOYMENT_CHECKLIST.md for how to get each one:
+#   AZURE_CREDENTIALS       service principal JSON, Contributor on rg-oc-careplan-ai
+#   ACR_USERNAME            registry admin username
+#   ACR_PASSWORD            registry admin password
+#   SUPABASE_DB_URL         agent memory database (also used by db-migrate.yml)
+#   CAREPLAN_AI_API_KEY     shared secret the Java backend sends as X-Api-Key
+#   AZURE_OPENAI_API_KEY
+#   AZURE_OPENAI_ENDPOINT
+#   PINECONE_API_KEY        optional - only when CAREPLAN_AI_LIBRARY_PROVIDER=pinecone
 
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}   # lets you trigger a deploy manually from the Actions tab too
+  workflow_dispatch: {}
+
+# One deploy at a time; a newer push waits rather than cancelling a live rollout.
+concurrency:
+  group: deploy-careplan-ai
+  cancel-in-progress: false
 
 env:
+  REGISTRY: ocareplanaiacr.azurecr.io
+  IMAGE: care-plan-ai-api
   RESOURCE_GROUP: rg-oc-careplan-ai
-  ACR_NAME: ocareplanaiacr
-  CONTAINERAPP_NAME: careplan-ai-api
-  IMAGE_NAME: care-plan-ai-api
+  CONTAINER_APP: careplan-ai-api
 
 jobs:
-  build-and-deploy:
+  test:
     runs-on: ubuntu-latest
-    environment: production   # ties this run to a GitHub Environment, if you set one up for approval gating
-    permissions:
-      id-token: write   # required for OIDC login to Azure — no stored secret needed
-      contents: read
-
+    services:
+      # Lets tests/integration/test_migrations.py run instead of skipping.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Azure login (OIDC — no client secret stored anywhere)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Test
+        env:
+          CAREPLAN_AI_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: pytest -q
+
+  migrate:
+    needs: test
+    uses: ./.github/workflows/db-migrate.yml
+    secrets:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      # Tagged with the commit SHA so every deploy is a distinct, traceable
+      # image (and a rollback is just redeploying an older tag); :latest is
+      # kept for manual use.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:latest
+
+  deploy:
+    needs: [build, migrate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure login
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Build image in ACR (no local Docker daemon needed on the runner)
+      - name: Install Container Apps CLI extension
+        run: az extension add --name containerapp --upgrade --only-show-errors
+
+      # Secrets live in the Container App's own secret store; env vars below
+      # only reference them (secretref:). GitHub is the single source of truth,
+      # so rotating a key = update the GitHub secret and re-run this workflow.
+      - name: Set app secrets
+        env:
+          CAREPLAN_AI_API_KEY: ${{ secrets.CAREPLAN_AI_API_KEY }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
         run: |
-          az acr build \
-            --registry ${{ env.ACR_NAME }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image ${{ env.IMAGE_NAME }}:${{ github.sha }} \
-            --image ${{ env.IMAGE_NAME }}:latest \
-            .
+          for name in CAREPLAN_AI_API_KEY AZURE_OPENAI_API_KEY AZURE_OPENAI_ENDPOINT SUPABASE_DB_URL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret $name is not set"
+              exit 1
+            fi
+          done
+          secrets=(
+            "careplan-api-key=$CAREPLAN_AI_API_KEY"
+            "openai-api-key=$AZURE_OPENAI_API_KEY"
+            "openai-endpoint=$AZURE_OPENAI_ENDPOINT"
+            "memory-db-url=$SUPABASE_DB_URL"
+          )
+          if [ -n "$PINECONE_API_KEY" ]; then
+            secrets+=("pinecone-api-key=$PINECONE_API_KEY")
+          fi
+          az containerapp secret set \
+            --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
+            --secrets "${secrets[@]}" --only-show-errors --output none
 
-      - name: Deploy new image to Container App
+      - name: Deploy new revision
         run: |
           az containerapp update \
-            --name ${{ env.CONTAINERAPP_NAME }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
+            --image "$REGISTRY/$IMAGE:${{ github.sha }}" \
+            --min-replicas 0 --max-replicas 2 \
+            --set-env-vars \
+              CAREPLAN_AI_ENVIRONMENT=staging \
+              CAREPLAN_AI_LOG_LEVEL=INFO \
+              CAREPLAN_AI_API_KEY=secretref:careplan-api-key \
+              CAREPLAN_AI_AZURE_OPENAI_API_KEY=secretref:openai-api-key \
+              CAREPLAN_AI_AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
+              CAREPLAN_AI_AZURE_OPENAI_DEPLOYMENT=gpt-5 \
+              CAREPLAN_AI_AZURE_OPENAI_API_VERSION=2024-12-01-preview \
+              CAREPLAN_AI_MODEL_ID=gpt-5 \
+              CAREPLAN_AI_LLM_TEMPERATURE=1 \
+              CAREPLAN_AI_MEMORY_DB_URL=secretref:memory-db-url \
+              CAREPLAN_AI_LIBRARY_PROVIDER=none \
+            --only-show-errors --output none
 
-      - name: Verify the deployed app is healthy
+      - name: Health check
         run: |
-          FQDN=$(az containerapp show \
-            --name ${{ env.CONTAINERAPP_NAME }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
+          fqdn=$(az containerapp show --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
             --query properties.configuration.ingress.fqdn -o tsv)
-          echo "Checking https://$FQDN/healthz"
-          for i in $(seq 1 10); do
-            if curl -sf "https://$FQDN/healthz"; then
-              echo "Healthy."
+          # Scale-to-zero means the first request cold-starts a replica.
+          for i in $(seq 1 12); do
+            if curl -fsS "https://$fqdn/healthz"; then
+              echo
+              echo "Live at https://$fqdn"
               exit 0
             fi
-            echo "Not ready yet (may be cold-starting from zero), retrying in 15s..."
-            sleep 15
+            echo "Not ready yet ($i/12), retrying in 10s"
+            sleep 10
           done
-          echo "App did not become healthy in time." >&2
+          echo "::error::https://$fqdn/healthz did not respond"
           exit 1

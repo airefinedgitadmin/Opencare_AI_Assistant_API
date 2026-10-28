@@ -13,6 +13,9 @@ from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from careplan_ai.core.model_config import get_model_spec
+from careplan_ai.memory.dsn import DbSettings, build_dsn
+
+_DB_FIELDS = set(DbSettings.model_fields)
 
 
 class Settings(BaseSettings):
@@ -75,12 +78,104 @@ class Settings(BaseSettings):
     rate_limit_requests: int = 10
     rate_limit_window_seconds: int = 60
 
+    # --- care plan agent (X-CarePlan-Version: 2) ---
+    # Model routing: the primary model runs both agents (care plan, verifier);
+    # the optional fallback model, if configured, does the care plan agent's
+    # revisions when its first draft fails the checks. Unset primary values fall back to the
+    # azure_openai_deployment/model_id pair above; deployment and model id are
+    # separate for the same reason they are there.
+    agent_primary_deployment: str | None = None
+    agent_primary_model_id: str | None = None
+    agent_fallback_deployment: str | None = None
+    agent_fallback_model_id: str | None = None
+    # Only sent to models whose registry entry supports it (GPT-5 family).
+    agent_reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = "low"
+    # Only used by models that accept temperature (e.g. gpt-4.1-mini).
+    agent_temperature: float = 0.0
+    agent_redraft_temperature: float = 0.5
+    # Reasoning models count their reasoning in this cap, so keep headroom.
+    agent_max_response_tokens: int = 8000
+    # Evidence is never cut or clipped silently. What the care plan agent reads
+    # (estimated tokens): the assessment, previous care plans and notes linked
+    # to this pathway always go in (the request is refused if they alone don't
+    # fit), then resident-level notes, most pathway-related first, then newest.
+    # Anything over budget is listed in the session's `omitted` ids, never lost.
+    agent_max_draft_evidence_tokens: int = 60_000
+    # The care plan agent's starting pack: must-read records, then for each
+    # need (risk answer, previous action, pathway note) its best matches across
+    # ALL the resident's records, up to this many tokens. Everything else stays
+    # reachable through its search_records tool.
+    agent_pack_tokens: int = 12_000
+    agent_pack_matches_per_need: int = 3
+    # Records returned per search_records call.
+    agent_search_results: int = 8
+    # Model turns the care plan agent may take (searching + submitting) per run.
+    agent_max_turns: int = 6
+    # How many times a submitted plan may be sent back (by the code checks or
+    # the verifier agent) to be fixed.
+    agent_max_revisions: int = 2
+    # The verifier agent checks every AI statement against its cited quotes.
+    # Off = statements are marked "not verified" (only for when quota is short).
+    agent_verify: bool = True
+    # On a 429, wait as long as Azure's Retry-After asks, up to this.
+    agent_rate_limit_max_wait_seconds: float = 20.0
+
+    # --- care plan style library (OPENCARE-51): RAG for tone/style only ---
+    # none = off (drafts use the neutral house style); memory = tests/dev;
+    # pinecone = an integrated-embedding Pinecone index, one namespace per home.
+    library_provider: Literal["none", "memory", "pinecone"] = "none"
+    library_top_k: int = 5
+    # Unedited AI-assisted plans are kept but ranked below staff-written and
+    # staff-edited ones; set false to leave them out of retrieval altogether.
+    library_include_unedited_ai: bool = True
+    pinecone_api_key: SecretStr | None = None
+    pinecone_index_name: str = "careplan-style-library"
+    pinecone_cloud: str = "aws"
+    pinecone_region: str = "us-east-1"
+    pinecone_embed_model: str = "llama-text-embed-v2"
+
+    # --- agent memory: Postgres (local / Supabase / Azure Postgres) ---
+    # Either the separate DB_* parts or one MEMORY_DB_URL (which wins if set);
+    # see memory/dsn.py. Neither configured = in-memory sessions, which are
+    # lost on restart and not shared between replicas - tests/dev only.
+    memory_db_url: SecretStr | None = None
+    db_host: str | None = None
+    db_port: int = 5432
+    db_name: str | None = None
+    db_user: str = "postgres"
+    db_password: SecretStr | None = None
+    db_sslmode: str | None = None
+    # Drafting sessions (which hold the evidence pack) are deleted this long
+    # after they start; saved care plan traces are kept.
+    agent_session_ttl_hours: int = 24
+
     @model_validator(mode="after")
     def _resolve_model_id(self) -> "Settings":
         if self.model_id is None:
             self.model_id = self.azure_openai_deployment
         get_model_spec(self.model_id)  # fail fast at startup on an unregistered model
         return self
+
+    @model_validator(mode="after")
+    def _resolve_agent_models(self) -> "Settings":
+        if self.agent_primary_deployment is None:
+            self.agent_primary_deployment = self.azure_openai_deployment
+            if self.agent_primary_model_id is None:
+                self.agent_primary_model_id = self.model_id
+        elif self.agent_primary_model_id is None:
+            self.agent_primary_model_id = self.agent_primary_deployment
+        assert self.agent_primary_model_id is not None
+        get_model_spec(self.agent_primary_model_id)
+        if self.agent_fallback_deployment is not None:
+            if self.agent_fallback_model_id is None:
+                self.agent_fallback_model_id = self.agent_fallback_deployment
+            get_model_spec(self.agent_fallback_model_id)
+        return self
+
+    @property
+    def memory_db_dsn(self) -> str | None:
+        """The usable connection string, or None when the DB isn't configured."""
+        return build_dsn(DbSettings.model_validate(self.model_dump(include=_DB_FIELDS)))
 
     @property
     def max_context_tokens(self) -> int:

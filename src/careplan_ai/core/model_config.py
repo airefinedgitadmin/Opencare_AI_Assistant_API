@@ -24,8 +24,16 @@ class ModelSpec:
     display_name: str
     context_window_tokens: int
     max_output_tokens: int
+    # GPT-5-family reasoning models reject any temperature other than the
+    # default; they take reasoning_effort instead. Older chat models are the
+    # reverse. The agent's model factory (agents/base/llm.py) reads these flags
+    # so switching models stays a config change.
+    supports_temperature: bool = False
+    supports_reasoning_effort: bool = True
 
 
+# Context windows are deliberately conservative (several of these models accept
+# more) - they only drive the v1 prompt-trimming safety net.
 MODEL_REGISTRY: dict[str, ModelSpec] = {
     "gpt-5": ModelSpec(
         model_id="gpt-5",
@@ -33,13 +41,34 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         context_window_tokens=128_000,
         max_output_tokens=16_000,
     ),
-    # Add future/alternative models here, e.g.:
-    # "gpt-4o": ModelSpec(
-    #     model_id="gpt-4o",
-    #     display_name="GPT-4o",
-    #     context_window_tokens=128_000,
-    #     max_output_tokens=16_384,
-    # ),
+    "gpt-5-mini": ModelSpec(
+        model_id="gpt-5-mini",
+        display_name="GPT-5 mini",
+        context_window_tokens=128_000,
+        max_output_tokens=16_000,
+    ),
+    "gpt-5-nano": ModelSpec(
+        model_id="gpt-5-nano",
+        display_name="GPT-5 nano",
+        context_window_tokens=128_000,
+        max_output_tokens=16_000,
+    ),
+    "gpt-5.4-mini": ModelSpec(
+        model_id="gpt-5.4-mini",
+        display_name="GPT-5.4 mini",
+        context_window_tokens=128_000,
+        max_output_tokens=16_000,
+    ),
+    # The only low-cost model offered as a Regional (UK South) deployment, i.e.
+    # the option if prompts must be processed inside the UK.
+    "gpt-4.1-mini": ModelSpec(
+        model_id="gpt-4.1-mini",
+        display_name="GPT-4.1 mini",
+        context_window_tokens=128_000,
+        max_output_tokens=16_384,
+        supports_temperature=True,
+        supports_reasoning_effort=False,
+    ),
 }
 
 
