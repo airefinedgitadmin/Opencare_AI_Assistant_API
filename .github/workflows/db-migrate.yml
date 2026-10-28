@@ -60,7 +60,9 @@ jobs:
           az containerapp show "${app[@]}" \
             --query "properties.template.containers[0].env[?value!=null].[name, value]" -o tsv |
           while IFS=$'\t' read -r name value; do
-            [[ "$name" =~ $db_vars ]] && echo "$name=$value" >> "$GITHUB_ENV"
+            if [[ "$name" =~ $db_vars ]]; then
+              echo "$name=$value" >> "$GITHUB_ENV"
+            fi
           done
 
           az containerapp show "${app[@]}" \

@@ -73,15 +73,19 @@ az provider register --namespace Microsoft.OperationalInsights
 
 The build and deploy jobs log in to Azure with a short-lived GitHub token, so
 no Azure password is stored anywhere. Uses the managed identity
-`careplan-ai-api-identity`; replace `<org>/<repo>` with the GitHub repository.
+`careplan-ai-api-identity`.
+
+The subject must match what GitHub sends exactly. This repository uses
+GitHub's ID-based subject format (owner and repo IDs after `@`); if a login
+fails with AADSTS700213, the error shows the subject to register.
 
 ```bash
 # Trust GitHub Actions runs on this repo's main branch
 az identity federated-credential create \
-  --name github-main \
+  --name github-main-ids \
   --identity-name careplan-ai-api-identity --resource-group rg-oc-careplan-ai \
   --issuer https://token.actions.githubusercontent.com \
-  --subject repo:<org>/<repo>:ref:refs/heads/main \
+  --subject "repo:airefinedgitadmin@235243447/Opencare_AI_Assistant_API@1340637424:ref:refs/heads/main" \
   --audiences api://AzureADTokenExchange
 
 # Needs Owner / User Access Administrator: let it build images and update the app.
