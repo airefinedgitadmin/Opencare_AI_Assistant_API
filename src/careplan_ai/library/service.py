@@ -75,7 +75,8 @@ async def _apply_ai_source(plans: list[LibraryCarePlanIn]) -> None:
     sessions = get_session_store()
     for plan in plans:
         try:
-            trace = await sessions.get_trace(plan.care_plan_id)
+            # Only the statements' wording is needed here, not the evidence.
+            trace = await sessions.get_trace(plan.care_plan_id, None)
         except Exception as exc:  # noqa: BLE001 - provenance is a ranking hint only
             logger.warning("library_trace_lookup_failed", error=type(exc).__name__)
             return

@@ -1,6 +1,6 @@
 import pytest
 
-from careplan_ai.agents.care_plan.context import count_tokens, rank_for_pathway
+from careplan_ai.agents.care_plan.context import count_tokens, is_must_read, rank_for_pathway
 from careplan_ai.agents.care_plan.packs import build_pack
 from careplan_ai.agents.care_plan.prompts import format_grouped
 from careplan_ai.agents.care_plan.schemas import EvidenceItem, SourceType
@@ -81,3 +81,58 @@ def test_pathway_related_notes_are_ranked_first_newest_first() -> None:
     ranked = rank_for_pathway(must, [old_teeth, new_music, new_teeth], "Oral Health Assessment")
 
     assert [e.id for e in ranked] == ["C3", "C1", "C2"]
+
+
+def _v(i: int, date: str | None, text: str = "Drink: Tea; Amount (ml): 200",
+       linked: bool = False, historical: bool = False) -> EvidenceItem:
+    return EvidenceItem(id=f"V{i}", source_type=SourceType.OBSERVATION, label="Fluid Chart",
+                        date=date, text=text, linked_to_pathway=linked, historical=historical)
+
+
+def test_observations_are_never_must_read_even_when_linked() -> None:
+    # A chart can hold hundreds of entries; must-read is never cut.
+    assert not is_must_read(_v(1, "12/10/2026", linked=True))
+    assert not is_must_read(_v(2, "12/10/2026"))
+
+
+def test_supporting_readings_are_labelled_for_the_agent() -> None:
+    reading = EvidenceItem(id="V9", source_type=SourceType.OBSERVATION, label="TPR",
+                           date="02/10/2026", text="Temperature: 38.2", linked_to_pathway=False,
+                           supporting=True)
+
+    assert format_grouped([reading]) == (
+        "[V9] Observation - TPR (02/10/2026, supporting): Temperature: 38.2"
+    )
+
+
+def test_a_linked_charts_summary_line_is_always_read() -> None:
+    def summary(linked: bool) -> EvidenceItem:
+        return EvidenceItem(id="T1", source_type=SourceType.OBSERVATION_SUMMARY,
+                            label="Fluid Chart", text="4 entries on 3 days",
+                            linked_to_pathway=linked)
+
+    assert is_must_read(summary(linked=True))
+    assert not is_must_read(summary(linked=False))
+
+
+def test_linked_chart_entries_rank_before_other_records() -> None:
+    must = [_a(1, "Dentures", "Yes")]
+    teeth = _c(1, "10/10/2026", "Refused to clean her dentures tonight.")
+    linked = _v(1, "09/10/2026", linked=True)
+    linked_old = _v(2, "01/01/2025", linked=True, historical=True)
+    unlinked = _v(3, "11/10/2026")
+
+    ranked = rank_for_pathway(must, [unlinked, teeth, linked_old, linked], "Oral Health")
+
+    assert [e.id for e in ranked] == ["V1", "C1", "V3", "V2"]
+
+
+def test_observation_lines_name_the_chart_and_repeated_entries_are_grouped() -> None:
+    entries = [_v(1, "01/10/2026"), _v(2, "02/10/2026"),
+               _v(3, "02/10/2026", "Drink: Water; Amount (ml): 150", linked=True)]
+
+    assert format_grouped(entries).splitlines() == [
+        "[V1, V2] Observation - Fluid Chart (x2: 01/10/2026, 02/10/2026; resident record): "
+        "Drink: Tea; Amount (ml): 200",
+        "[V3] Observation - Fluid Chart (02/10/2026): Drink: Water; Amount (ml): 150",
+    ]

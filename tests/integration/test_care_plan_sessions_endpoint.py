@@ -14,6 +14,8 @@ from careplan_ai.agents.care_plan.schemas import (
     OutcomeOut,
     OutcomesOut,
     PatternOut,
+    ReadOut,
+    RelevantRecordOut,
     RiskFlagOut,
     VerdictOut,
     VerifyOut,
@@ -116,8 +118,16 @@ def fake_models(monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:  # type: ig
                                 for ref, text, quotes in statements])
         return _all_supported(statements)
 
+    async def _read(*, resident_name: str | None, pathway: str | None,
+                    context: list[EvidenceItem], records: list[EvidenceItem]) -> ReadOut:
+        # Reader agents: nothing found by default (tests script their own).
+        calls["read"].append([e.id for e in records])
+        return ReadOut(relevant=[], not_relevant=[e.id for e in records])
+
+    calls["read"] = []
     monkeypatch.setattr("careplan_ai.agents.care_plan.llm.generate_redraft", _redraft)
     monkeypatch.setattr("careplan_ai.agents.care_plan.llm.verify_statements", _verify)
+    monkeypatch.setattr("careplan_ai.agents.care_plan.llm.read_records", _read)
     return calls
 
 
@@ -367,9 +377,14 @@ def test_one_by_one_flow_outcomes_follow_added_actions_and_finalize_saves_trace(
         trace = client.post(f"/care-plans/sessions/{sid}/finalize", json={"carePlanId": 1234},
                             headers=HEADERS)
         assert trace.status_code == 200, trace.text
-        stored = client.get("/care-plans/traces/1234", headers=HEADERS).json()
+        subject = client.get("/care-plans/traces/1234/subject", headers=HEADERS).json()
+        # The backend rebuilds the evidence for that assessment and sends it.
+        stored = client.post("/care-plans/traces/1234/view", headers=HEADERS,
+                             json={"evidence": START_PAYLOAD}).json()
+        blind = client.get("/care-plans/traces/1234", headers=HEADERS).json()
         after = client.post(f"{url}/S2/decision", json={"decision": "add"}, headers=HEADERS)
 
+    assert subject["assessmentTemplateUserId"] == 42 and subject["evidenceAsOf"]
     statements = stored["statements"]
     assert [(s["cardId"], s["field"]) for s in statements] == [("S1", "action"), ("S1", "outcome")]
     assert statements[0]["text"] == "Staff should help Cathy with her dentures."
@@ -377,7 +392,62 @@ def test_one_by_one_flow_outcomes_follow_added_actions_and_finalize_saves_trace(
     assert statements[0]["verification"] == "supported"
     assert statements[0]["evidence"][0]["text"] == "Yes"
     assert stored["notUsed"][0]["supersededBy"] == "R1"
+    # Without the evidence the trace still holds its statements, but no record text.
+    assert blind["statements"][0]["text"] == "Staff should help Cathy with her dentures."
+    assert blind["statements"][0]["evidence"][0]["changed"] is True
     assert after.status_code == 409  # finalized sessions are read-only
+
+
+def test_agent_memory_holds_no_record_text_or_name(
+    base_env: None, fake_models: dict[str, list]  # type: ignore[type-arg]
+) -> None:
+    import json
+
+    from careplan_ai.memory.store import get_session_store
+
+    with TestClient(create_app()) as client:
+        session = _start(client)
+        sid = session["sessionId"]
+        stored = get_session_store()._sessions[sid]  # type: ignore[attr-defined]
+        # Without the evidence pack, records come back as changed - never stale.
+        bare = client.get(f"/care-plans/sessions/{sid}", headers=HEADERS).json()
+        # With it, the same ids and text as at the start.
+        viewed = client.post(f"/care-plans/sessions/{sid}/view", headers=HEADERS,
+                             json={"evidence": START_PAYLOAD}).json()
+        other = client.post(f"/care-plans/sessions/{sid}/view", headers=HEADERS,
+                            json={"evidence": {**START_PAYLOAD, "assessmentTemplateUserId": 7}})
+
+    # Patient content: the name, answers, care plan and note wording, AI wording.
+    # (Record references - e.g. the form's question id "dentures" - are kept.)
+    for secret in ("Cathy", "plaque", "independent with her oral care",
+                   "assist with providing oral hygiene", "Staff should"):
+        assert secret not in stored, secret
+    assert set(json.loads(stored)) == {"session", "evidence", "sealed"}
+    assert all(e["changed"] for e in bare["evidence"])
+    assert bare["residentName"] is None
+    assert [(e["id"], e["text"]) for e in viewed["evidence"]] == [
+        (e["id"], e["text"]) for e in session["evidence"]
+    ]
+    assert viewed["residentName"] == "Cathy"
+    assert viewed["cards"] == session["cards"]
+    assert other.status_code == 422  # evidence for another assessment is refused
+
+
+def test_a_record_changed_since_the_draft_is_flagged_not_quoted_stale(
+    base_env: None, fake_models: dict[str, list]  # type: ignore[type-arg]
+) -> None:
+    changed = {**START_PAYLOAD, "reviewNotes": [
+        {"noteId": 5, "createdDate": "08/10/2026", "note": "Staff now provide full oral care."}
+    ]}
+    with TestClient(create_app()) as client:
+        sid = _start(client)["sessionId"]
+        viewed = client.post(f"/care-plans/sessions/{sid}/view", headers=HEADERS,
+                             json={"evidence": changed}).json()
+
+    by_id = {e["id"]: e for e in viewed["evidence"]}
+    assert by_id["R1"]["changed"] is True
+    assert by_id["R1"]["text"] != "Staff now provide full oral care."
+    assert by_id["A1"]["changed"] is False and by_id["A1"]["text"] == "Yes"
 
 
 MUSIC_AND_TEETH_NOTES = [
@@ -415,8 +485,61 @@ def test_each_need_gets_its_best_matches_and_the_rest_stays_searchable(
     # ahead of four unrelated notes about music.
     assert "C5" in shown and "C6" in shown
     assert not {"C1", "C2", "C3", "C4"} & set(shown)
-    # Never seen -> listed, not dropped silently.
+    # The four music notes didn't fit: a reader agent read them (as one line).
+    assert fake_models["read"] == [["C1", "C2", "C3", "C4"]]
+    assert [(s["evidenceId"], s["kind"]) for s in session["screened"]] == [
+        ("C1", "not_relevant"), ("C2", "not_relevant"), ("C3", "not_relevant"),
+        ("C4", "not_relevant"),
+    ]
+    assert session["omitted"] == []
+    assert session["notices"][-1] == (
+        "The AI read all 13 records. 4 of them have nothing for this pathway."
+    )
+
+
+def test_a_need_found_by_a_reader_must_be_covered_or_is_shown_word_for_word(
+    base_env: None, fake_models: dict[str, list], monkeypatch: pytest.MonkeyPatch  # type: ignore[type-arg]
+) -> None:
+    _small_pack(monkeypatch)
+
+    async def _read(**kwargs: object) -> ReadOut:
+        # Any id of a repeated record's line answers for the whole line.
+        return ReadOut(relevant=[RelevantRecordOut(evidence_id="C2", kind="new_requirement",
+                                                   reason="enjoyed the music session")],
+                       not_relevant=[])
+
+    monkeypatch.setattr("careplan_ai.agents.care_plan.llm.read_records", _read)
+    with TestClient(create_app()) as client:
+        session = _start(client, {**START_PAYLOAD, "notes": MUSIC_AND_TEETH_NOTES})
+
+    # C2 is the same note as C1, C3 and C4 - the reader's answer covers the line.
+    kinds = {s["evidenceId"]: s["kind"] for s in session["screened"]}
+    assert kinds == {"C1": "new_requirement", "C2": "new_requirement",
+                     "C3": "new_requirement", "C4": "new_requirement"}
+    # The care plan agent got the record, and no action cited it: shown word for word.
+    assert {"C1", "C2", "C3", "C4"} <= set(fake_models["draft"][0]["evidence"])
+    backfilled = [c for c in session["cards"] if c["origin"] == "source_text"]
+    assert [c["evidenceIds"] for c in backfilled] == [["C1"]]
+    assert backfilled[0]["text"] == "Cathy enjoyed the music session."
+
+
+def test_records_no_reader_could_read_are_reported_not_dropped(
+    base_env: None, fake_models: dict[str, list], monkeypatch: pytest.MonkeyPatch  # type: ignore[type-arg]
+) -> None:
+    _small_pack(monkeypatch)
+
+    async def _down(**kwargs: object) -> ReadOut:
+        raise RuntimeError("Azure unavailable")
+
+    monkeypatch.setattr("careplan_ai.agents.care_plan.llm.read_records", _down)
+    with TestClient(create_app()) as client:
+        session = _start(client, {**START_PAYLOAD, "notes": MUSIC_AND_TEETH_NOTES})
+
     assert session["omitted"] == ["C1", "C2", "C3", "C4"]
+    assert session["notices"][-1] == (
+        "The AI could not read 4 of 13 records - check them yourself before saving."
+    )
+    assert session["cards"]  # the draft still goes ahead
 
 
 def test_the_agent_can_search_the_rest_of_the_record(
@@ -467,6 +590,35 @@ def test_history_and_patterns_inform_the_plan_but_never_become_requirements(
     assert ["C1"] not in backfilled and ["H1"] not in backfilled
     labels = {e["id"]: e["label"] for e in session["evidence"]}
     assert labels["H1"] == "Earlier care plan (Oral Health Assessment, archived) - action"
+
+
+def test_observation_entries_are_numbered_shown_and_citable(
+    base_env: None, fake_models: dict[str, list], monkeypatch: pytest.MonkeyPatch  # type: ignore[type-arg]
+) -> None:
+    payload = {
+        **START_PAYLOAD,
+        "observations": [
+            {"entryId": "65f0a1", "observationType": "OF_OH", "observationName": "Oral Health",
+             "recordedDate": "13/10/2026", "pathwayLinked": True,
+             "values": [{"field": "Oral care", "value": "Prompted"},
+                        {"field": "Gums", "value": "Sore"}]},
+        ],
+    }
+    draft = FAKE_DRAFT.model_copy(update={"actions": [
+        ACTION_1.model_copy(update={"evidence_ids": ["A1", "V1"]}), ACTION_2,
+    ]})
+    fake_agent(monkeypatch, lambda role, messages: draft)
+    with TestClient(create_app()) as client:
+        session = _start(client, payload)
+
+    v1 = next(e for e in session["evidence"] if e["id"] == "V1")
+    assert (v1["sourceType"], v1["label"], v1["sourceRef"], v1["text"]) == (
+        "observation", "Oral Health", "65f0a1", "Oral care: Prompted; Gums: Sore"
+    )
+    assert session["cards"][0]["evidenceIds"] == ["A1", "V1"]
+    # The verifier judges the action against the reading it cites.
+    assert ("S1", ACTION_1.text, ["A1", "V1"]) in fake_models["verify"][0]
+    assert session["omitted"] == []
 
 
 def test_rate_limit_wait_follows_azure_retry_after(base_env: None) -> None:
@@ -539,7 +691,10 @@ def test_every_record_is_used_and_unanswered_questions_are_listed(
         "suggestions are built from its answers.",
         "Not answered in Bedroom Fire Risk Assessment (BFRA): Does the resident smoke?; "
         "Are there electrical heaters in the room?.",
+        "The AI read all 3 records.",
     ]
+    # Everything fitted the pack, so no reader agent was needed.
+    assert fake_models["read"] == []
 
 
 def test_only_unanswered_questions_gives_a_message_without_a_model_call(

@@ -119,6 +119,24 @@ class Settings(BaseSettings):
     agent_verify: bool = True
     # On a 429, wait as long as Azure's Retry-After asks, up to this.
     agent_rate_limit_max_wait_seconds: float = 20.0
+    # Reader agents: every record that doesn't fit the care plan agent's pack
+    # is read by one, in parallel chunks, and classified for this pathway -
+    # so nothing is missed however large the record. Off = such records are
+    # only reachable by search and are listed as `omitted` when never read.
+    agent_read_all: bool = True
+    # A fast model for the readers (e.g. gpt-5-mini); unset = the primary model.
+    agent_reader_deployment: str | None = None
+    agent_reader_model_id: str | None = None
+    agent_reader_reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = "minimal"
+    # Records per reader call (estimated tokens) and calls in flight at once.
+    agent_reader_chunk_tokens: int = 6_000
+    agent_reader_concurrency: int = 8
+    # The pathway context each reader gets (assessment answers, previous
+    # actions) - context for judging relevance, not evidence.
+    agent_reader_context_tokens: int = 2_000
+    # Records the readers find relevant are added to the care plan agent's
+    # evidence: care needs always, information-only ones up to this budget.
+    agent_reader_added_tokens: int = 30_000
 
     # --- care plan style library (OPENCARE-51): RAG for tone/style only ---
     # none = off (drafts use the neutral house style); memory = tests/dev;
@@ -145,9 +163,15 @@ class Settings(BaseSettings):
     db_user: str = "postgres"
     db_password: SecretStr | None = None
     db_sslmode: str | None = None
-    # Drafting sessions (which hold the evidence pack) are deleted this long
-    # after they start; saved care plan traces are kept.
-    agent_session_ttl_hours: int = 24
+    # Drafting sessions are deleted this long after they start; saved care plan
+    # traces are kept. Neither holds record text: only references to the
+    # backend's records, plus the AI's wording encrypted (memory/sealing.py).
+    agent_session_ttl_hours: int = 2
+    # Key for the AI wording kept in agent memory, and for record fingerprints
+    # (a Fernet key: `python -c "from cryptography.fernet import Fernet;
+    # print(Fernet.generate_key().decode())"`). Required with a database;
+    # in-memory storage uses a throwaway key when unset.
+    agent_state_key: SecretStr | None = None
 
     @model_validator(mode="after")
     def _resolve_model_id(self) -> "Settings":
@@ -170,6 +194,10 @@ class Settings(BaseSettings):
             if self.agent_fallback_model_id is None:
                 self.agent_fallback_model_id = self.agent_fallback_deployment
             get_model_spec(self.agent_fallback_model_id)
+        if self.agent_reader_deployment is not None:
+            if self.agent_reader_model_id is None:
+                self.agent_reader_model_id = self.agent_reader_deployment
+            get_model_spec(self.agent_reader_model_id)
         return self
 
     @property

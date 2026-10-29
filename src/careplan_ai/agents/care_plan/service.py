@@ -11,6 +11,7 @@ import uuid
 from careplan_ai.agents.care_plan import llm
 from careplan_ai.agents.care_plan.evidence import build_evidence, unanswered_questions
 from careplan_ai.agents.care_plan.graph import run_draft
+from careplan_ai.agents.care_plan.read import NOT_RELEVANT
 from careplan_ai.agents.care_plan.schemas import (
     ActionCard,
     CardOrigin,
@@ -19,6 +20,7 @@ from careplan_ai.agents.care_plan.schemas import (
     CarePlanTrace,
     EvidenceItem,
     GenerationInfo,
+    ScreenedRecord,
     SessionStatus,
     SessionView,
     SourceType,
@@ -40,7 +42,7 @@ from careplan_ai.agents.care_plan.verify import (
     REJECT,
     overstated_warning,
 )
-from careplan_ai.api.schemas.agent import DecisionRequest, StartSessionRequest
+from careplan_ai.api.schemas.agent import DecisionRequest, StartSessionRequest, SubjectOut
 from careplan_ai.core.config import get_settings
 from careplan_ai.core.exceptions import (
     InvalidRequestError,
@@ -91,6 +93,22 @@ def _notices(
     return notices
 
 
+def coverage_notice(
+    evidence: list[EvidenceItem], screened: list[ScreenedRecord], omitted: list[str]
+) -> str:
+    """How much of the resident's record the AI read - every draft says so."""
+    total = len(evidence)
+    if omitted:
+        return (
+            f"The AI could not read {len(omitted)} of {total} records - check them "
+            "yourself before saving."
+        )
+    not_relevant = sum(1 for s in screened if s.kind == NOT_RELEVANT)
+    return f"The AI read all {total} records." + (
+        f" {not_relevant} of them have nothing for this pathway." if not_relevant else ""
+    )
+
+
 async def start_session(request: StartSessionRequest) -> SessionView:
     evidence = build_evidence(request)
     if not evidence and not unanswered_questions(request):
@@ -136,8 +154,10 @@ async def start_session(request: StartSessionRequest) -> SessionView:
         created_at=now,
         updated_at=now,
         evidence=evidence,
+        screened=outcome.screened,
         omitted=outcome.omitted,
-        notices=_notices(request, evidence, drafted=True),
+        notices=_notices(request, evidence, drafted=True)
+        + [coverage_notice(evidence, outcome.screened, outcome.omitted)],
         risks=result.risks,
         patterns=outcome.patterns,
         not_used=result.not_used,
@@ -154,6 +174,8 @@ async def start_session(request: StartSessionRequest) -> SessionView:
             searches=outcome.searches,
             rejected_count=outcome.rejected,
             verifier_ran=outcome.verifier_ran,
+            reader_calls=outcome.reader_calls,
+            reader_seconds=outcome.reader_seconds,
         ),
     )
     await get_session_store().save_session(session)
@@ -162,6 +184,9 @@ async def start_session(request: StartSessionRequest) -> SessionView:
         session_id=session.session_id,
         assessment_template_user_id=session.assessment_template_user_id,
         evidence_items=len(evidence),
+        screened=len(session.screened),
+        reader_calls=outcome.reader_calls,
+        reader_seconds=outcome.reader_seconds,
         omitted=len(session.omitted),
         revisions=outcome.revisions,
         rejected=outcome.rejected,
@@ -174,13 +199,47 @@ async def start_session(request: StartSessionRequest) -> SessionView:
     return SessionView.of(session)
 
 
-async def _load_open(session_id: str) -> CarePlanSession:
-    session = await get_session_store().get_session(session_id)
+def _check_evidence(evidence: StartSessionRequest | None, assessment_template_user_id: int) -> None:
+    if evidence is None:
+        # Agent memory holds no record text: without the evidence pack, every
+        # record shows as changed (agents/care_plan/stored.py).
+        logger.warning("care_plan_evidence_not_sent")
+    elif evidence.assessment_template_user_id != assessment_template_user_id:
+        raise InvalidRequestError("The evidence sent is for a different assessment")
+
+
+async def _load(session_id: str, evidence: StartSessionRequest | None) -> CarePlanSession:
+    store = get_session_store()
+    subject = await store.session_subject(session_id)
+    if subject is None:
+        raise SessionNotFoundError("Session not found or expired")
+    _check_evidence(evidence, subject[0])
+    session = await store.get_session(session_id, evidence)
     if session is None:
         raise SessionNotFoundError("Session not found or expired")
+    return session
+
+
+async def _load_open(session_id: str, evidence: StartSessionRequest | None) -> CarePlanSession:
+    session = await _load(session_id, evidence)
     if session.status != SessionStatus.OPEN:
         raise SessionStateError("Session is already finalized")
     return session
+
+
+async def session_subject(session_id: str) -> SubjectOut:
+    """Whose evidence the backend must send with this session's calls."""
+    subject = await get_session_store().session_subject(session_id)
+    if subject is None:
+        raise SessionNotFoundError("Session not found or expired")
+    return SubjectOut(assessment_template_user_id=subject[0], evidence_as_of=subject[1])
+
+
+async def trace_subject(care_plan_id: int) -> SubjectOut:
+    subject = await get_session_store().trace_subject(care_plan_id)
+    if subject is None:
+        raise SessionNotFoundError("No AI trace for this care plan")
+    return SubjectOut(assessment_template_user_id=subject[0], evidence_as_of=subject[1])
 
 
 def _card(session: CarePlanSession, card_id: str) -> ActionCard:
@@ -190,11 +249,8 @@ def _card(session: CarePlanSession, card_id: str) -> ActionCard:
     return card
 
 
-async def get_session(session_id: str) -> SessionView:
-    session = await get_session_store().get_session(session_id)
-    if session is None:
-        raise SessionNotFoundError("Session not found or expired")
-    return SessionView.of(session)
+async def get_session(session_id: str, evidence: StartSessionRequest | None = None) -> SessionView:
+    return SessionView.of(await _load(session_id, evidence))
 
 
 def _apply_text(target: Suggestion, text: str | None) -> None:
@@ -205,7 +261,7 @@ def _apply_text(target: Suggestion, text: str | None) -> None:
 
 
 async def decide(session_id: str, card_id: str, request: DecisionRequest) -> SessionView:
-    session = await _load_open(session_id)
+    session = await _load_open(session_id, request.evidence)
     card = _card(session, card_id)
 
     if request.target == "action":
@@ -243,12 +299,14 @@ async def decide(session_id: str, card_id: str, request: DecisionRequest) -> Ses
     return SessionView.of(session)
 
 
-async def write_outcomes(session_id: str) -> SessionView:
+async def write_outcomes(
+    session_id: str, evidence: StartSessionRequest | None = None
+) -> SessionView:
     """The outcome step (deck slide 13): outcomes are written only for actions
     staff have added, when staff open the Outcome field - one call for all of
     them, then the same code checks and the verifier agent as everything else.
     A rejected outcome is simply not offered."""
-    session = await _load_open(session_id)
+    session = await _load_open(session_id, evidence)
     cards = [c for c in session.cards if c.id in set(outcomes_to_write(session))]
     if not cards:
         return SessionView.of(session)
@@ -360,12 +418,14 @@ async def _verify_one(resident_name: str | None, text: str, quotes: list[Evidenc
     return verdict.verdict if verdict is not None else "not_verified"
 
 
-async def redraft(session_id: str, card_id: str, target: str) -> SessionView:
+async def redraft(
+    session_id: str, card_id: str, target: str, pack: StartSessionRequest | None = None
+) -> SessionView:
     """New wording for one action or outcome, from exactly the same evidence.
 
     Every other card is untouched. If the new wording introduces a number that
     isn't in the sources, it is discarded and the current wording kept."""
-    session = await _load_open(session_id)
+    session = await _load_open(session_id, pack)
     card = _card(session, card_id)
     suggestion: Suggestion
     if target == "outcome":
@@ -439,10 +499,12 @@ async def redraft(session_id: str, card_id: str, target: str) -> SessionView:
     return SessionView.of(session)
 
 
-async def finalize(session_id: str, care_plan_id: int) -> CarePlanTrace:
+async def finalize(
+    session_id: str, care_plan_id: int, evidence: StartSessionRequest | None = None
+) -> CarePlanTrace:
     """Called after the backend has saved the care plan. Stores, per added
-    statement, its final text and the evidence quotes behind it."""
-    session = await _load_open(session_id)
+    statement, its final text (encrypted) and references to the evidence behind it."""
+    session = await _load_open(session_id, evidence)
     by_id = {e.id: e for e in session.evidence}
 
     statements: list[TraceStatement] = []
@@ -483,12 +545,14 @@ async def finalize(session_id: str, care_plan_id: int) -> CarePlanTrace:
         assessment_template_user_id=session.assessment_template_user_id,
         pathway=session.pathway,
         created_at=utcnow(),
+        evidence_as_of=session.created_at,
         model_id=session.generation.model_id,
         statements=statements,
         not_used=session.not_used,
         not_used_evidence=[e for e in session.evidence if e.id in not_used_ids],
         example_ids=session.generation.example_ids,
         omitted_count=len(session.omitted),
+        not_relevant_count=sum(1 for s in session.screened if s.kind == NOT_RELEVANT),
     )
     store = get_session_store()
     await store.save_trace(trace)
@@ -508,8 +572,15 @@ async def finalize(session_id: str, care_plan_id: int) -> CarePlanTrace:
     return trace
 
 
-async def get_trace(care_plan_id: int) -> CarePlanTrace:
-    trace = await get_session_store().get_trace(care_plan_id)
+async def get_trace(
+    care_plan_id: int, evidence: StartSessionRequest | None = None
+) -> CarePlanTrace:
+    store = get_session_store()
+    subject = await store.trace_subject(care_plan_id)
+    if subject is None:
+        raise SessionNotFoundError("No AI trace for this care plan")
+    _check_evidence(evidence, subject[0])
+    trace = await store.get_trace(care_plan_id, evidence)
     if trace is None:
         raise SessionNotFoundError("No AI trace for this care plan")
     return trace

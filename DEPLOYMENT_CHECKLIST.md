@@ -128,6 +128,49 @@ config, or the two can't authenticate to each other.
 
 Never put a real key in this file, `.env.example` or any other tracked file.
 
+(`scripts/set-container-app-env.ps1` is not in the repo yet: until it is, set
+values in the portal - careplan-ai-api -> Containers -> Environment variables /
+Secrets - or with `az containerapp update --set-env-vars`.)
+
+### Agent memory key (`CAREPLAN_AI_AGENT_STATE_KEY`) - in Key Vault
+
+Agent memory stores no record text, only references; the AI's own wording
+(suggestions, staff edits, saved-plan statements) is encrypted with this key.
+It is **separate from `CAREPLAN_AI_API_KEY`** (callers never see it) and must be
+set **before** deploying a version that needs it, or starting a draft fails.
+One key per environment. Do once, by someone with access to the subscription:
+
+```bash
+KV=<key vault name>        # the data controller's vault, UK region
+RG=rg-oc-careplan-ai
+APP=careplan-ai-api
+
+# 1. Generate the key on your own machine (never paste it into chat or tickets)
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# 2. Store it in Key Vault
+az keyvault secret set --vault-name $KV --name careplan-ai-agent-state-key --value "<KEY>"
+
+# 3. Let the app read it: give it an identity, grant read on secrets
+az containerapp identity assign --name $APP --resource-group $RG --system-assigned
+az role assignment create --role "Key Vault Secrets User" \
+  --assignee "$(az containerapp show --name $APP --resource-group $RG --query identity.principalId -o tsv)" \
+  --scope "$(az keyvault show --name $KV --query id -o tsv)"
+
+# 4. Reference it from the app (the value stays in Key Vault)
+az containerapp secret set --name $APP --resource-group $RG \
+  --secrets agent-state-key=keyvaultref:https://$KV.vault.azure.net/secrets/careplan-ai-agent-state-key,identityref:system
+az containerapp update --name $APP --resource-group $RG \
+  --set-env-vars CAREPLAN_AI_AGENT_STATE_KEY=secretref:agent-state-key
+```
+
+- **Never change or delete it while traces exist** - a different key can't read
+  them ("View" on saved plans loses its statements). Rotating needs a code
+  change first (read with old + new key); ask before rotating.
+- Key Vault keeps the backup and the access log; whoever can read the secret
+  can read the stored AI wording, so it belongs with the data controller.
+- Locally: add `CAREPLAN_AI_AGENT_STATE_KEY=<key>` to `.env` (see `.env.example`).
+
 ## Deploying
 
 - **Normally:** push or merge to `main`.

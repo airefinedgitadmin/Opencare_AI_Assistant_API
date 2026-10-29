@@ -31,7 +31,10 @@ You are given EVIDENCE: numbered items from this resident's own records -
   R = review notes; C = carer notes; N = nursing notes;
   G = external professional notes (GP, district nurse, ...); F = relatives
   H = this resident's earlier care plans (archived, or for other pathways)
-A note marked "resident record" was not written against this pathway. Items \
+  V = observation chart entries (fluid, food, TPR, falls diary, ...), one per entry
+  T = one chart's summary line, computed from all its entries
+A note marked "resident record" was not written against this pathway; an \
+observation marked "resident record" is from a chart not linked to it. Items \
 marked "history" are from before the current period: use them to understand \
 what has happened before and what worked, and to make actions person-centred \
 - but a past need is only a current need if current evidence says so.
@@ -63,13 +66,20 @@ guessing, put its id in carry_over instead - staff see it exactly as written.
 - If items need the same or a similar action, combine them into ONE action \
 that cites all of them - and keep every detail of each item (e.g. "upper \
 dentures", "after meals"). Combining must never drop information.
+- V items are readings staff recorded on a chart; T items summarise a chart. \
+Quote their figures exactly as written: never calculate a total, average or \
+difference, and never turn a reading into a diagnosis or a risk the evidence \
+does not state. A reading can support an action or a pattern, but never makes \
+a P item not_used. V and T items marked "supporting" are context for this \
+pathway only: cite them alongside other evidence, never as the only evidence \
+for an action.
 
 TASKS
 1. risks: for each assessment answer (A) that shows a risk or a need for \
 support, give its id and a short reason using the answer's own words. Answers \
 showing no problem are not risks.
-2. note_classes: classify EVERY note item (R, C, N, G, F) as new_requirement, \
-update, status or not_relevant (to this pathway).
+2. note_classes: classify EVERY note item (R, C, N, G, F - not V) as \
+new_requirement, update, status or not_relevant (to this pathway).
 3. not_used: a P item belongs here ONLY if a current (not "history") note item \
 says it no longer applies or has changed; give that note's id as \
 superseded_by. Never cite a not_used P item in an action.
@@ -160,6 +170,26 @@ Give a verdict for EVERY ref. For anything but supported, the reason names the \
 exact words at fault and what the quote actually says.
 """
 
+READ_SYSTEM_PROMPT = """\
+You read part of a UK care home resident's records for ONE care plan pathway, \
+so that nothing relevant to it is missed. You do not write the care plan.
+
+PATHWAY CONTEXT shows what the pathway's assessment and previous care plan \
+already say. RECORDS are numbered lines (V = chart readings, T = chart \
+summaries); ids in one bracket are the same record written on several dates - \
+judge them together and answer with the FIRST id of the line.
+
+For EVERY record line decide one of:
+  relevant, with a kind and a reason of at most 12 words in the record's words:
+    new_requirement - raises a care need, risk or action for this pathway that \
+the context doesn't already show
+    update - changes or confirms something the context shows
+    status - useful information for this pathway, no action needed
+  not_relevant - nothing to do with this pathway.
+When unsure, mark it relevant. Every line appears exactly once, in relevant \
+or in not_relevant. Use only ids shown.
+"""
+
 _SOURCE_NAMES = {
     SourceType.ASSESSMENT: "Assessment",
     SourceType.PREVIOUS_CARE_PLAN: "Previous care plan",
@@ -167,19 +197,29 @@ _SOURCE_NAMES = {
 }
 
 
+def _source_name(item: EvidenceItem) -> str:
+    if item.is_note:
+        return _SOURCE_NAMES.get(item.source_type, item.label)
+    if item.is_observation:
+        return f"Observation - {item.label}"
+    if item.is_chart_summary:
+        return f"Observation summary - {item.label}"
+    if item.source_type == SourceType.RELATED_CARE_PLAN:
+        return item.label
+    return _SOURCE_NAMES[item.source_type] + (" outcome" if item.id.startswith("O") else "")
+
+
 def format_evidence_line(item: EvidenceItem) -> str:
     details = [item.date] if item.date else []
     if item.source_type == SourceType.ASSESSMENT:
         when = f" ({details[0]})" if details else ""
         return f"[{item.id}] Assessment{when} - Q: {item.label} | A: {item.text}"
-    if item.is_note:
-        name = _SOURCE_NAMES.get(item.source_type, item.label)
-        if not item.linked_to_pathway:
-            details.append("resident record")
-    elif item.source_type == SourceType.RELATED_CARE_PLAN:
-        name = item.label
-    else:
-        name = _SOURCE_NAMES[item.source_type] + (" outcome" if item.id.startswith("O") else "")
+    name = _source_name(item)
+    on_record = item.is_note or item.is_observation or item.is_chart_summary
+    if item.supporting:
+        details.append("supporting")
+    elif on_record and not item.linked_to_pathway:
+        details.append("resident record")
     if item.historical:
         details.append("history")
     suffix = f" ({', '.join(details)})" if details else ""
@@ -190,19 +230,26 @@ def format_evidence(items: list[EvidenceItem]) -> str:
     return "\n".join(format_evidence_line(item) for item in items)
 
 
-def format_grouped(items: list[EvidenceItem]) -> str:
-    """Like format_evidence, but the same note written on several dates is
-    shown once with all its ids and dates - lossless and much shorter."""
+def group_repeats(items: list[EvidenceItem]) -> list[list[EvidenceItem]]:
+    """Items in order, with the same note (or chart entry) written on several
+    dates gathered into one group - one line of format_grouped each."""
     groups: dict[tuple[str, str, bool, bool, str], list[EvidenceItem]] = {}
     for item in items:
-        if not item.is_note:
+        if not (item.is_note or item.is_observation):
             groups[(item.id, "", False, False, "")] = [item]
             continue
         key = (item.source_type.value, item.label, item.linked_to_pathway, item.historical,
                " ".join(item.text.split()).casefold())
         groups.setdefault(key, []).append(item)
+    return list(groups.values())
+
+
+def format_grouped(items: list[EvidenceItem]) -> str:
+    """Like format_evidence, but the same note (or chart entry) written on
+    several dates is shown once with all its ids and dates - lossless and much
+    shorter."""
     lines = []
-    for group in groups.values():
+    for group in group_repeats(items):
         first = group[0]
         if len(group) == 1:
             lines.append(format_evidence_line(first))
@@ -210,11 +257,13 @@ def format_grouped(items: list[EvidenceItem]) -> str:
         ids = ", ".join(e.id for e in group)
         dates = ", ".join(e.date for e in group if e.date)
         details = [f"x{len(group)}" + (f": {dates}" if dates else "")]
-        if not first.linked_to_pathway:
+        if first.supporting:
+            details.append("supporting")
+        elif not first.linked_to_pathway:
             details.append("resident record")
         if first.historical:
             details.append("history")
-        name = _SOURCE_NAMES.get(first.source_type, first.label)
+        name = _source_name(first)
         lines.append(f"[{ids}] {name} ({'; '.join(details)}): {first.text}")
     return "\n".join(lines)
 
@@ -270,6 +319,8 @@ _EXAMPLE_EVIDENCE = [
     EvidenceItem(id="N1", source_type=SourceType.NURSING_NOTE, label="Nursing note",
                  text="Cathy said her gums felt sore when brushing this morning.",
                  date="12/10/2026", linked_to_pathway=False),
+    EvidenceItem(id="V1", source_type=SourceType.OBSERVATION, label="Oral Health",
+                 text="Oral care: Prompted; Gums: Sore", date="13/10/2026"),
 ]
 
 _EXAMPLE_OUTPUT = DraftPlanOut(
@@ -301,7 +352,7 @@ _EXAMPLE_OUTPUT = DraftPlanOut(
             text="Staff should prompt Cathy to carry out oral hygiene to keep particles, "
                  "tartar and plaque from building up, and may need to assist her with it, "
                  "taking care as her gums have felt sore when brushing.",
-            evidence_ids=["A2", "P2", "R1", "R2", "N1"],
+            evidence_ids=["A2", "P2", "R1", "R2", "N1", "V1"],
         ),
     ],
 )
@@ -388,6 +439,26 @@ def build_outcome_messages(
         HumanMessage(
             content=f"Resident: {resident_name or 'the resident'}\n\n" + "\n\n".join(blocks)
             + format_style_examples(examples or [])
+        ),
+    ]
+
+
+def build_read_messages(
+    *,
+    resident_name: str | None,
+    pathway: str | None,
+    context: list[EvidenceItem],
+    records: list[EvidenceItem],
+) -> list[BaseMessage]:
+    """A reader agent's messages: the fixed prompt first (cacheable), then this
+    pathway's context and its chunk of records."""
+    return [
+        SystemMessage(content=READ_SYSTEM_PROMPT),
+        HumanMessage(
+            content=f"Resident: {resident_name or 'the resident'}\n"
+            f"Pathway: {pathway or 'Not specified'}\n\n"
+            f"PATHWAY CONTEXT\n{format_evidence(context) or 'None'}\n\n"
+            f"RECORDS\n{format_grouped(records)}"
         ),
     ]
 

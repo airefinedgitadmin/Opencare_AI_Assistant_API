@@ -1,11 +1,12 @@
 """Shared helpers for what the care plan agent reads (packs.py builds the pack):
 token estimates, date order, what is must-read, and pathway ranking.
 
-* must-read: the assessment, previous care plans and notes written against
-  this pathway - always read, never cut.
-* the rest: notes on the resident's record only (most carer notes) and history
-  (older notes, archived / other-pathway care plans) - matched to each need,
-  ranked by pathway, and searchable by the agent.
+* must-read: the assessment, previous care plans, notes written against this
+  pathway and the summary line of each chart linked to it - always read,
+  never cut.
+* the rest: notes on the resident's record only (most carer notes), observation
+  chart entries and history (older notes, archived / other-pathway care plans)
+  - matched to each need, ranked by pathway, and searchable by the agent.
 """
 
 import re
@@ -49,20 +50,34 @@ def newest_first(items: list[EvidenceItem]) -> list[EvidenceItem]:
 def is_must_read(item: EvidenceItem) -> bool:
     if item.historical:
         return False  # background - matched and searched like resident-level notes
+    if item.is_observation:
+        # A chart can hold hundreds of entries, and must-read is never cut -
+        # entries are matched to needs, ranked and searched instead.
+        return False
+    if item.is_chart_summary:
+        # One line per chart: always read for the charts linked to this pathway.
+        return item.linked_to_pathway
     return not item.is_note or item.linked_to_pathway
 
 
 def rank_for_pathway(
     must_read: list[EvidenceItem], candidates: list[EvidenceItem], pathway: str | None
 ) -> list[EvidenceItem]:
-    """Candidates that share a content word with this pathway (its name, its
-    assessment questions and answers, previous plans, pathway notes) first,
-    the rest after; newest first within each group. Order only - nothing is
-    removed here."""
+    """Current entries of the charts mapped to this pathway first; then
+    candidates that share a content word with this pathway (its name, its
+    assessment questions and answers, previous plans, pathway notes); the rest
+    after; newest first within each group. Order only - nothing is removed
+    here."""
     vocabulary = content_stems(
         [pathway or ""]
         + [e.label for e in must_read if e.source_type == SourceType.ASSESSMENT]
         + [e.text for e in must_read]
     )
     ordered = newest_first(candidates)
-    return sorted(ordered, key=lambda e: not (content_stems([e.text]) & vocabulary))
+    return sorted(
+        ordered,
+        key=lambda e: (
+            not (e.is_observation and e.linked_to_pathway and not e.historical),
+            not (content_stems([e.text]) & vocabulary),
+        ),
+    )

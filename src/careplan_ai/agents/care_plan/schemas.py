@@ -127,6 +127,27 @@ class VerifyOut(BaseModel):
     verdicts: list[VerdictOut]
 
 
+ReadKind = Literal["new_requirement", "update", "status"]
+
+
+class RelevantRecordOut(BaseModel):
+    evidence_id: str = Field(description="The record's id (the first id of its line).")
+    kind: ReadKind = Field(
+        description=(
+            "new_requirement: raises a care need or action for this pathway; update: changes "
+            "or confirms an existing need; status: useful information only."
+        )
+    )
+    reason: str = Field(description="At most 12 words, using the record's own words.")
+
+
+class ReadOut(BaseModel):
+    """A reader agent's verdict on its chunk: every record, exactly once."""
+
+    relevant: list[RelevantRecordOut]
+    not_relevant: list[str] = Field(description="Ids of records with nothing for this pathway.")
+
+
 # --------------------------------------------------------------------------
 # Session (agent memory)
 # --------------------------------------------------------------------------
@@ -143,6 +164,13 @@ class SourceType(StrEnum):
     # Archived care plans of this pathway and care plans of other pathways -
     # background ("has this happened before?"), never a current requirement.
     RELATED_CARE_PLAN = "related_care_plan"
+    # One entry on an observation chart (fluid, food, TPR, falls diary, ...) -
+    # a recorded reading. Supporting evidence only: not classified like a note,
+    # never supersedes a previous action, never required coverage on its own.
+    OBSERVATION = "observation"
+    # One line per chart, computed by code from its entries (how many, which
+    # days, each figure's range and latest value) - never by a model.
+    OBSERVATION_SUMMARY = "observation_summary"
 
 
 NOTE_SOURCES = frozenset(
@@ -167,15 +195,33 @@ class EvidenceItem(CamelModel):
     label: str
     date: str | None = None
     text: str
-    # Notes only: False = on the resident's record, not this pathway's.
+    # Notes and observations only: False = on the resident's record, not this
+    # pathway's.
     linked_to_pathway: bool = True
     # Before the current period (older notes, earlier/other care plans):
     # context and patterns only - never a requirement on its own.
     historical: bool = False
+    # Observations only: a SUPPORTING chart for this pathway (care team rules)
+    # - context that can back an action alongside other evidence, never alone.
+    supporting: bool = False
+    # The record changed or is no longer in the backend's evidence since the AI
+    # read it (agent memory keeps references, not text - agents/care_plan/stored.py).
+    changed: bool = False
+    # The fingerprint the record had when the AI read it - kept through every
+    # load and save, so a call without the evidence can't overwrite it.
+    fingerprint: str | None = Field(default=None, exclude=True)
 
     @property
     def is_note(self) -> bool:
         return self.source_type in NOTE_SOURCES
+
+    @property
+    def is_observation(self) -> bool:
+        return self.source_type == SourceType.OBSERVATION
+
+    @property
+    def is_chart_summary(self) -> bool:
+        return self.source_type == SourceType.OBSERVATION_SUMMARY
 
 
 class Pattern(CamelModel):
@@ -193,6 +239,16 @@ class MissingDetail(CamelModel):
 
     evidence_id: str
     words: list[str]
+
+
+class ScreenedRecord(CamelModel):
+    """A record a reader agent read because it didn't fit the care plan
+    agent's pack: what it found. Relevant ones go on to the care plan agent."""
+
+    evidence_id: str
+    # new_requirement | update | status | not_relevant
+    kind: str
+    reason: str = ""
 
 
 class CardStatus(StrEnum):
@@ -278,6 +334,9 @@ class GenerationInfo(CamelModel):
     # Statements the verifier agent rejected (dropped; sources shown instead).
     rejected_count: int = 0
     verifier_ran: bool = False
+    # Reader agents: model calls made, and seconds the reading took.
+    reader_calls: int = 0
+    reader_seconds: float = 0.0
 
 
 class CarePlanSession(CamelModel):
@@ -294,7 +353,10 @@ class CarePlanSession(CamelModel):
     # Everything the backend sent, numbered - including notes the model was
     # never shown (see screened_out / omitted), so nothing silently vanishes.
     evidence: list[EvidenceItem]
-    # Records the care plan agent never saw (not in its pack, never searched).
+    # Records the care plan agent didn't read itself, as a reader agent judged
+    # them (relevant ones were then given to the care plan agent).
+    screened: list[ScreenedRecord] = Field(default_factory=list)
+    # Records NO agent read (a reader failed) - staff are told to check them.
     omitted: list[str] = Field(default_factory=list)
     # Plain-language messages for staff - e.g. which assessment questions are
     # unanswered, or why there are no suggestions.
@@ -382,9 +444,14 @@ class CarePlanTrace(CamelModel):
     assessment_template_user_id: int
     pathway: str | None = None
     created_at: datetime
+    # When the evidence was read (the draft's start): the backend rebuilds the
+    # evidence as of then to show the quotes (agents/care_plan/stored.py).
+    evidence_as_of: datetime | None = None
     model_id: str
     statements: list[TraceStatement]
     not_used: list[NotUsedItem]
     not_used_evidence: list[EvidenceItem]
     example_ids: list[str] = Field(default_factory=list)
     omitted_count: int = 0
+    # Records a reader agent judged not relevant to this pathway.
+    not_relevant_count: int = 0

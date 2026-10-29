@@ -14,6 +14,11 @@ and the code checks can tell sources apart at a glance:
     F1..  relative communication sentences
     H1..  related care plan sentences (this pathway's archived plans, other
           pathways' plans) - history: context and patterns, never required
+    V1..  observation chart entries (fluid, food, TPR, falls diary, ...) - one
+          item per entry, its fields as "Field: value; ..."; supporting only
+    T1..  one summary line per chart, computed here from its entries (count,
+          days, each number's range and latest value) - so a long chart is
+          always represented exactly, whatever is read of its entries
 
 Nothing is capped or clipped here: deck slide 20 says no information may be
 removed or skipped. What the model reads is decided by token budget in
@@ -24,7 +29,12 @@ import re
 from html.parser import HTMLParser
 
 from careplan_ai.agents.care_plan.schemas import EvidenceItem, SourceType
-from careplan_ai.api.schemas.agent import NoteIn, ReviewNoteIn, StartSessionRequest
+from careplan_ai.api.schemas.agent import (
+    NoteIn,
+    ObservationIn,
+    ReviewNoteIn,
+    StartSessionRequest,
+)
 
 _NOTE_SOURCES: dict[str, tuple[SourceType, str]] = {
     "carer": (SourceType.CARER_NOTE, "C"),
@@ -209,4 +219,104 @@ def build_evidence(request: StartSessionRequest) -> list[EvidenceItem]:
                     )
                 )
 
-    return items
+    v_count = 0
+    recorded: list[ObservationIn] = []
+    for entry in request.observations:
+        text = observation_text(entry)
+        if not text:
+            continue  # an empty entry records nothing
+        v_count += 1
+        recorded.append(entry)
+        items.append(
+            EvidenceItem(
+                id=f"V{v_count}",
+                source_type=SourceType.OBSERVATION,
+                source_ref=entry.entry_id,
+                label=_chart_name(entry),
+                date=entry.recorded_date,
+                text=text,
+                linked_to_pathway=entry.pathway_linked,
+                historical=entry.historical,
+                supporting=entry.is_supporting,
+            )
+        )
+
+    return items + chart_summaries(recorded)
+
+
+def _chart_name(entry: ObservationIn) -> str:
+    return entry.observation_name.strip() or "Observation"
+
+
+_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _day(value: str | None) -> tuple[int, int, int] | None:
+    """(year, month, day) of a 'dd/MM/yyyy' date, for ordering."""
+    parts = (value or "").strip()[:10].split("/")
+    if len(parts) == 3 and all(p.isdigit() for p in parts):
+        return int(parts[2]), int(parts[1]), int(parts[0])
+    return None
+
+
+def chart_summaries(entries: list[ObservationIn]) -> list[EvidenceItem]:
+    """One line per chart (current entries and history apart), from 2+ entries:
+    how many, on how many days, and for every numeric field its lowest and
+    highest value and the latest one - figures exactly as recorded, nothing
+    added up or averaged, so the line is as quotable as the entries."""
+    charts: dict[tuple[str, bool], list[ObservationIn]] = {}
+    for entry in entries:
+        charts.setdefault((_chart_name(entry), entry.historical), []).append(entry)
+
+    summaries: list[EvidenceItem] = []
+    for (name, historical), group in charts.items():
+        if len(group) < 2:
+            continue  # one entry says it all
+        # Stable: same-day entries keep the backend's (oldest first) order.
+        ordered = sorted(group, key=lambda e: _day(e.recorded_date) or (0, 0, 0))
+        dated = [e.recorded_date for e in ordered if _day(e.recorded_date)]
+        days = len({_day(d) for d in dated})
+        parts = [f"{len(group)} entries"]
+        if dated:
+            span = dated[0] if dated[0] == dated[-1] else f"{dated[0]} to {dated[-1]}"
+            parts[0] += f" on {days} day{'s' if days != 1 else ''} ({span})"
+
+        figures: dict[str, list[str]] = {}
+        for entry in ordered:
+            for v in entry.values:
+                value = _WHITESPACE.sub(" ", v.value or "").strip()
+                field = _WHITESPACE.sub(" ", v.field).strip()
+                if field and _NUMBER.fullmatch(value):
+                    figures.setdefault(field, []).append(value)
+        for field, values in figures.items():
+            low = min(values, key=float)
+            high = max(values, key=float)
+            if float(low) == float(high):
+                parts.append(f"{field}: {values[-1]} every time")
+            else:
+                parts.append(f"{field}: {low} to {high}, latest {values[-1]}")
+
+        summaries.append(
+            EvidenceItem(
+                id=f"T{len(summaries) + 1}",
+                source_type=SourceType.OBSERVATION_SUMMARY,
+                label=name,
+                date=dated[-1] if dated else None,
+                text="; ".join(parts),
+                linked_to_pathway=any(e.pathway_linked for e in group),
+                historical=historical,
+                supporting=all(e.is_supporting for e in group),
+            )
+        )
+    return summaries
+
+
+def observation_text(entry: ObservationIn) -> str:
+    """'Field: value; Field: value' for the fields that were filled in."""
+    parts = []
+    for v in entry.values:
+        value = _WHITESPACE.sub(" ", v.value or "").strip()
+        field = _WHITESPACE.sub(" ", v.field).strip()
+        if value:
+            parts.append(f"{field}: {value}" if field else value)
+    return "; ".join(parts)

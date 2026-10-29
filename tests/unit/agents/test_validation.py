@@ -66,6 +66,67 @@ def test_clean_draft_passes_with_no_backfill() -> None:
     assert [n.evidence_id for n in result.not_used] == ["P1"]
 
 
+ORAL_READING = EvidenceItem(id="V1", source_type=SourceType.OBSERVATION, label="Oral Health",
+                     text="Oral care: Prompted; Gums: Sore", date="13/10/2026")
+
+
+def test_observations_support_actions_but_are_never_required_or_superseding() -> None:
+    draft = _draft(
+        note_classes=[NoteClassOut(evidence_id="R1", kind="new_requirement"),
+                      NoteClassOut(evidence_id="V1", kind="new_requirement")],
+        not_used=[NotUsedOut(evidence_id="P1", superseded_by="V1", reason="Gums sore")],
+        carry_over=["V1"],
+        risks=[RiskFlagOut(evidence_id="A1", reason="Has dentures"),
+               RiskFlagOut(evidence_id="A2", reason="Some plaque"),
+               RiskFlagOut(evidence_id="V1", reason="Sore gums")],
+        actions=[
+            ActionOut(text="Staff should support Cathy with her dentures and her sore gums.",
+                      evidence_ids=["A1", "V1"], outcome_text="", outcome_evidence_ids=[]),
+            ActionOut(text="Staff should prompt Cathy with oral hygiene to reduce plaque and "
+                           "assist when needed.",
+                      evidence_ids=["A2", "P2", "R1"], outcome_text="", outcome_evidence_ids=[]),
+        ],
+    )
+
+    result = validate_draft([*EVIDENCE, ORAL_READING], draft, resident_name="Cathy")
+
+    # A reading backs an action (and adds a second source type: high confidence) ...
+    assert result.cards[0].evidence_ids == ["A1", "V1"]
+    assert result.cards[0].confidence == Confidence.HIGH
+    # ... but is not a note, a risk, a reason to drop P1, or a carry-over.
+    for use in ("Risk 'V1'", "Note class 'V1'", "not_used 'P1 superseded by V1'",
+                "carry_over 'V1'"):
+        assert any(p.startswith(use) for p in result.problems), use
+    assert result.invalid_reference_count == 4
+    assert result.not_used == []
+    # P1 is still current (its "superseding" reading doesn't count), so it is
+    # added back word for word; the reading itself never is.
+    backfilled = [c.evidence_ids for c in result.cards if c.origin == CardOrigin.SOURCE_TEXT]
+    assert backfilled == [["P1"]]
+
+
+def test_a_supporting_reading_never_drives_an_action_on_its_own() -> None:
+    supporting = EvidenceItem(id="V2", source_type=SourceType.OBSERVATION, label="Fluid Chart",
+                              text="Drink: Water; Amount (ml): 50", supporting=True)
+    draft = _draft(actions=[
+        ActionOut(text="Staff should encourage Cathy to drink more water.",
+                  evidence_ids=["V2"], outcome_text="", outcome_evidence_ids=[]),
+        ActionOut(text="Staff should support Cathy with her dentures.",
+                  evidence_ids=["A1", "V2"], outcome_text="", outcome_evidence_ids=[]),
+        ActionOut(text="Staff should prompt Cathy with oral hygiene to reduce plaque and "
+                       "assist when needed.",
+                  evidence_ids=["A2", "P2", "R1"], outcome_text="", outcome_evidence_ids=[]),
+    ])
+
+    result = validate_draft([*EVIDENCE, supporting], draft, resident_name="Cathy")
+
+    texts = [c.text for c in result.cards]
+    assert "Staff should encourage Cathy to drink more water." not in texts
+    assert any("cites only supporting readings (V2)" in p for p in result.problems)
+    # Alongside other evidence, a supporting reading is fine.
+    assert result.cards[0].evidence_ids == ["A1", "V2"]
+
+
 def test_invented_ids_are_discarded_and_unsupported_actions_dropped() -> None:
     draft = _draft(
         actions=[
@@ -256,7 +317,7 @@ def test_names_not_in_sources_are_flagged() -> None:
 
 def test_possessive_names_with_either_apostrophe_are_recognised() -> None:
     draft = _draft(actions=[
-        ActionOut(text="Staff should look after Cathy’s dentures and Cathy's mouth.",
+        ActionOut(text="Staff should look after Cathyâ€™s dentures and Cathy's mouth.",
                   evidence_ids=["A1"], outcome_text="", outcome_evidence_ids=[]),
         ActionOut(text="Staff should prompt oral hygiene and assist.",
                   evidence_ids=["A2", "P2", "R1"], outcome_text="", outcome_evidence_ids=[]),

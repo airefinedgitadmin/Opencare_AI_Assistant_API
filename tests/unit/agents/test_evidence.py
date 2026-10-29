@@ -109,3 +109,86 @@ def test_build_evidence_numbers_every_note_type() -> None:
     )
     assert by_id["F1"].label == "Relative (Daughter)"
     assert all(e.is_note for e in evidence)
+
+
+def test_build_evidence_makes_one_item_per_observation_entry() -> None:
+    request = StartSessionRequest.model_validate(
+        {
+            "assessmentTemplateUserId": 1,
+            "observations": [
+                {"entryId": "m1", "observationType": "OF_FLC", "observationName": "Fluid Chart",
+                 "recordedDate": "12/10/2026", "pathwayLinked": True,
+                 "values": [{"field": "Drink", "value": "Tea"},
+                            {"field": "Amount (ml)", "value": " 200 "},
+                            {"field": "Comments", "value": ""}]},
+                {"entryId": "m2", "observationName": "Fluid Chart",
+                 "values": [{"field": "Drink", "value": None}]},
+                {"entryId": "m3", "observationName": "Falls Diary", "historical": True,
+                 "values": [{"field": "Location", "value": "Lounge"}]},
+            ],
+        }
+    )
+
+    evidence = build_evidence(request)
+
+    # m2 recorded nothing, so it is skipped; blank fields are left out.
+    assert [e.id for e in evidence] == ["V1", "V2"]
+    v1, v2 = evidence
+    assert (v1.text, v1.label, v1.date, v1.source_ref) == (
+        "Drink: Tea; Amount (ml): 200", "Fluid Chart", "12/10/2026", "m1"
+    )
+    assert v1.source_type == SourceType.OBSERVATION
+    assert v1.is_observation and not v1.is_note
+    assert v1.linked_to_pathway is True and v1.historical is False
+    assert v2.linked_to_pathway is False and v2.historical is True
+
+
+def test_each_reading_keeps_its_role_from_the_pathway_rules() -> None:
+    def reading(**extra: object) -> dict:  # type: ignore[type-arg]
+        return {"observationName": "Toileting Chart",
+                "values": [{"field": "Output", "value": "Wet"}], **extra}
+
+    request = StartSessionRequest.model_validate({
+        "assessmentTemplateUserId": 1,
+        "observations": [reading(role="primary", pathwayLinked=True),
+                         reading(role="supporting"),
+                         reading(pathwayLinked=True),  # older backend: no role sent
+                         reading()],
+    })
+
+    readings = [e for e in build_evidence(request) if e.is_observation]
+
+    assert [e.supporting for e in readings] == [False, True, False, True]
+
+
+def _fluid(day: str, amount: str, target: str = "3000", historical: bool = False) -> dict:  # type: ignore[type-arg]
+    return {"observationName": "Fluid Chart", "recordedDate": day, "pathwayLinked": True,
+            "historical": historical,
+            "values": [{"field": "Drink", "value": "Tea"},
+                       {"field": "Amount (ml)", "value": amount},
+                       {"field": "Target (ml)", "value": target}]}
+
+
+def test_each_chart_gets_one_exact_summary_line_computed_in_code() -> None:
+    request = StartSessionRequest.model_validate(
+        {
+            "assessmentTemplateUserId": 1,
+            "observations": [
+                _fluid("21/10/2026", "200"), _fluid("21/10/2026", "60"),
+                _fluid("23/10/2026", "150"), _fluid("22/10/2026", "90"),
+                _fluid("01/05/2026", "100", historical=True),  # one old entry: no summary
+                {"observationName": "Falls Diary", "recordedDate": "20/10/2026",
+                 "values": [{"field": "Location", "value": "Lounge"}]},
+            ],
+        }
+    )
+
+    summaries = [e for e in build_evidence(request) if e.is_chart_summary]
+
+    assert [(s.id, s.label, s.date) for s in summaries] == [("T1", "Fluid Chart", "23/10/2026")]
+    # Figures exactly as recorded: range and the latest by date - no totals or averages.
+    assert summaries[0].text == (
+        "4 entries on 3 days (21/10/2026 to 23/10/2026); "
+        "Amount (ml): 60 to 200, latest 150; Target (ml): 3000 every time"
+    )
+    assert summaries[0].linked_to_pathway is True and summaries[0].historical is False

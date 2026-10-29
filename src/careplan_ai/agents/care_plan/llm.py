@@ -1,4 +1,5 @@
-"""The two agents' model calls (and the staff-requested redraft).
+"""The agents' model calls - care plan, verifier, readers - and the
+staff-requested redraft.
 
 Kept in one small module so tests can replace exactly these and exercise
 everything else (agent loop, graph, validation, memory, API) for real.
@@ -9,6 +10,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from careplan_ai.agents.base.llm import ModelRole, invoke_structured, invoke_with_tools
 from careplan_ai.agents.care_plan.prompts import (
     build_outcome_messages,
+    build_read_messages,
     build_redraft_messages,
     build_verify_messages,
 )
@@ -16,6 +18,7 @@ from careplan_ai.agents.care_plan.schemas import (
     AGENT_TOOLS,
     EvidenceItem,
     OutcomesOut,
+    ReadOut,
     RedraftOut,
     VerifyOut,
 )
@@ -51,6 +54,20 @@ async def verify_statements(
     """Verifier agent: each statement judged against only the quotes it cites."""
     messages = build_verify_messages(resident_name=resident_name, statements=statements)
     return await invoke_structured("primary", VerifyOut, messages)
+
+
+async def read_records(
+    *,
+    resident_name: str | None,
+    pathway: str | None,
+    context: list[EvidenceItem],
+    records: list[EvidenceItem],
+) -> ReadOut:
+    """A reader agent: classifies one chunk of records for this pathway."""
+    messages = build_read_messages(
+        resident_name=resident_name, pathway=pathway, context=context, records=records
+    )
+    return await invoke_structured("reader", ReadOut, messages)
 
 
 async def generate_redraft(

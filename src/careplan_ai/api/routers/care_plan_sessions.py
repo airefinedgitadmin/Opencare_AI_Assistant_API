@@ -12,9 +12,11 @@ from careplan_ai.agents.care_plan.schemas import CarePlanTrace, SessionView
 from careplan_ai.api.dependencies import require_api_key
 from careplan_ai.api.schemas.agent import (
     DecisionRequest,
+    EvidenceRequest,
     FinalizeRequest,
     RedraftRequest,
     StartSessionRequest,
+    SubjectOut,
 )
 from careplan_ai.api.versioning import require_agent_version
 from careplan_ai.core.rate_limit import generation_limit_value, limiter
@@ -32,9 +34,22 @@ async def start_session(request: Request, payload: StartSessionRequest) -> Sessi
     return await service.start_session(payload)
 
 
+@router.get("/sessions/{session_id}/subject", response_model=SubjectOut)
+async def session_subject(session_id: str) -> SubjectOut:
+    """Whose evidence (and as of when) to send with this session's calls -
+    agent memory keeps references, not record text."""
+    return await service.session_subject(session_id)
+
+
 @router.get("/sessions/{session_id}", response_model=SessionView)
 async def get_session(session_id: str) -> SessionView:
+    """Without evidence: every record shows as changed. Prefer POST .../view."""
     return await service.get_session(session_id)
+
+
+@router.post("/sessions/{session_id}/view", response_model=SessionView)
+async def view_session(session_id: str, payload: EvidenceRequest) -> SessionView:
+    return await service.get_session(session_id, payload.evidence)
 
 
 @router.post("/sessions/{session_id}/cards/{card_id}/decision", response_model=SessionView)
@@ -44,9 +59,11 @@ async def decide(session_id: str, card_id: str, payload: DecisionRequest) -> Ses
 
 @router.post("/sessions/{session_id}/outcomes", response_model=SessionView)
 @limiter.limit(generation_limit_value)
-async def write_outcomes(request: Request, session_id: str) -> SessionView:
+async def write_outcomes(
+    request: Request, session_id: str, payload: EvidenceRequest | None = None
+) -> SessionView:
     """Write outcomes for the actions staff have added (Outcome field opened)."""
-    return await service.write_outcomes(session_id)
+    return await service.write_outcomes(session_id, payload.evidence if payload else None)
 
 
 @router.post("/sessions/{session_id}/cards/{card_id}/redraft", response_model=SessionView)
@@ -54,14 +71,25 @@ async def write_outcomes(request: Request, session_id: str) -> SessionView:
 async def redraft(
     request: Request, session_id: str, card_id: str, payload: RedraftRequest
 ) -> SessionView:
-    return await service.redraft(session_id, card_id, payload.target)
+    return await service.redraft(session_id, card_id, payload.target, payload.evidence)
 
 
 @router.post("/sessions/{session_id}/finalize", response_model=CarePlanTrace)
 async def finalize(session_id: str, payload: FinalizeRequest) -> CarePlanTrace:
-    return await service.finalize(session_id, payload.care_plan_id)
+    return await service.finalize(session_id, payload.care_plan_id, payload.evidence)
+
+
+@router.get("/traces/{care_plan_id}/subject", response_model=SubjectOut)
+async def trace_subject(care_plan_id: int) -> SubjectOut:
+    return await service.trace_subject(care_plan_id)
 
 
 @router.get("/traces/{care_plan_id}", response_model=CarePlanTrace)
 async def get_trace(care_plan_id: int) -> CarePlanTrace:
+    """Without evidence: every record shows as changed. Prefer POST .../view."""
     return await service.get_trace(care_plan_id)
+
+
+@router.post("/traces/{care_plan_id}/view", response_model=CarePlanTrace)
+async def view_trace(care_plan_id: int, payload: EvidenceRequest) -> CarePlanTrace:
+    return await service.get_trace(care_plan_id, payload.evidence)

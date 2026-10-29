@@ -92,6 +92,8 @@ or in a `.env` file (see `.env.example`).
 | `CAREPLAN_AI_ENVIRONMENT` | no | `local` | `local` \| `development` \| `staging` \| `production` |
 | `CAREPLAN_AI_LOG_LEVEL` | no | `INFO` | Python logging level |
 | `CAREPLAN_AI_API_KEY` | **yes** | - | Shared secret the caller sends as `X-Api-Key` |
+| `CAREPLAN_AI_AGENT_STATE_KEY` | with a database | - | Fernet key encrypting the AI wording agent memory keeps (separate from the API key; held in Key Vault - see DEPLOYMENT_CHECKLIST.md) |
+| `CAREPLAN_AI_AGENT_SESSION_TTL_HOURS` | no | `2` | How long a drafting session is kept |
 | `CAREPLAN_AI_AZURE_OPENAI_ENDPOINT` | **yes** | - | e.g. `https://your-resource.openai.azure.com` |
 | `CAREPLAN_AI_AZURE_OPENAI_API_KEY` | **yes** | - | Azure OpenAI resource key |
 | `CAREPLAN_AI_AZURE_OPENAI_DEPLOYMENT` | **yes** | - | Chat-completions deployment name |

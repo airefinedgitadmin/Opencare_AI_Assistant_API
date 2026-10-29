@@ -327,10 +327,12 @@ def validate_draft(
     examples: list[str] | None = None,
     resident_sources: list[str] | None = None,
     with_outcomes: bool = True,
+    required_groups: list[list[str]] | None = None,
 ) -> ValidationResult:
     """`evidence` is what the model was shown. `resident_sources` is all of the
     resident's text (including notes it wasn't shown), used only to decide
-    whether a detail could have come from somewhere other than an example."""
+    whether a detail could have come from somewhere other than an example.
+    `required_groups`: records a reader agent found a need in (read.py)."""
     by_id = {e.id: e for e in evidence}
     invalid = 0
     problems: list[str] = []
@@ -429,6 +431,16 @@ def validate_draft(
         if not ids or not text:
             dropped += 1
             problems.append(f"Action \"{text[:80]}\" has no valid evidence and was dropped.")
+            continue
+        if all(by_id[i].supporting for i in ids):
+            # Supporting charts are context for this pathway (care team rules):
+            # they back an action, never drive one on their own.
+            dropped += 1
+            problems.append(
+                f"Action \"{text[:80]}\" cites only supporting readings ({', '.join(ids)}) and "
+                "was dropped. Cite the assessment, care plan, note or primary chart it responds "
+                "to, or remove it."
+            )
             continue
         if _RECORD_REFERENCE.search(text):
             dropped += 1
@@ -550,6 +562,29 @@ def validate_draft(
                 evidence_ids=[source.id],
                 risk_evidence_ids=[source.id] if is_risk else [],
                 warnings=[UNADDRESSED_RISK_WARNING] if is_risk else [],
+                confidence=Confidence.MEDIUM,
+                verification="source_text",
+            )
+        )
+
+    # Needs a reader agent found in records the care plan agent didn't start
+    # with: an action must cite one of each record's ids (the same record on
+    # several dates counts once), or it is shown word for word.
+    for group in required_groups or []:
+        first = by_id.get(group[0])
+        if first is None or group[0] in required or any(i in covered for i in group):
+            continue
+        backfilled += 1
+        problems.append(
+            f"[{first.id}] raises a need for this pathway but no action cites it: {first.text}"
+        )
+        cards.append(
+            ActionCard(
+                id="",
+                origin=CardOrigin.SOURCE_TEXT,
+                text=first.text,
+                original_text=first.text,
+                evidence_ids=[first.id],
                 confidence=Confidence.MEDIUM,
                 verification="source_text",
             )

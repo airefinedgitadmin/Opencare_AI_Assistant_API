@@ -22,6 +22,8 @@ dependencies = [
     "langgraph>=0.2",
     "psycopg[binary]>=3.2",
     "pinecone>=7,<8",
+    # Encrypts the AI wording kept in agent memory (memory/sealing.py).
+    "cryptography>=43",
 ]
 
 [project.optional-dependencies]

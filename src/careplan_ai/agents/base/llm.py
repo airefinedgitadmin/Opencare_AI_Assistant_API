@@ -5,6 +5,7 @@ Model routing is by role, resolved from settings:
     primary  - the care plan agent's first draft, and the verifier agent
     fallback - optional stronger model for the care plan agent's revisions
     redraft  - the primary model, with some variation where the model allows it
+    reader   - optional fast model for the reader agents; the primary otherwise
 
 Temperature and reasoning_effort are only sent to models whose registry entry
 supports them (GPT-5-family reasoning models reject custom temperatures).
@@ -26,7 +27,7 @@ from careplan_ai.core.model_config import get_model_spec
 
 logger = get_logger(__name__)
 
-ModelRole = Literal["primary", "fallback", "redraft"]
+ModelRole = Literal["primary", "fallback", "redraft", "reader"]
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -38,6 +39,9 @@ def model_for_role(role: ModelRole) -> tuple[str, str]:
             raise ConfigurationError("No fallback model is configured")
         assert settings.agent_fallback_model_id is not None
         return settings.agent_fallback_deployment, settings.agent_fallback_model_id
+    if role == "reader" and settings.agent_reader_deployment is not None:
+        assert settings.agent_reader_model_id is not None
+        return settings.agent_reader_deployment, settings.agent_reader_model_id
     assert settings.agent_primary_deployment is not None
     assert settings.agent_primary_model_id is not None
     return settings.agent_primary_deployment, settings.agent_primary_model_id
@@ -57,8 +61,11 @@ def get_agent_model(role: ModelRole) -> AzureChatOpenAI:
         kwargs["temperature"] = (
             settings.agent_redraft_temperature if role == "redraft" else settings.agent_temperature
         )
-    if spec.supports_reasoning_effort and settings.agent_reasoning_effort:
-        kwargs["reasoning_effort"] = settings.agent_reasoning_effort
+    effort = settings.agent_reasoning_effort
+    if role == "reader":
+        effort = settings.agent_reader_reasoning_effort
+    if spec.supports_reasoning_effort and effort:
+        kwargs["reasoning_effort"] = effort
     return AzureChatOpenAI(
         azure_endpoint=settings.azure_openai_endpoint,
         api_key=settings.azure_openai_api_key,

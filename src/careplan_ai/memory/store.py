@@ -8,10 +8,13 @@ Two backends behind one interface:
 * InMemoryStore - tests and local dev. Lost on restart and not shared between
   replicas, so never rely on it in a deployed environment.
 
-What is stored: a session holds the evidence pack the backend sent plus the
-suggestions and staff decisions; it is deleted CAREPLAN_AI_AGENT_SESSION_TTL_HOURS
-after it starts. A trace holds only the statements that went into a saved
-care plan and the evidence quotes behind them, so "View" keeps working.
+What is stored (agents/care_plan/stored.py): no record text. A session keeps
+references to the evidence (ids, backend record ids, keyed fingerprints) and
+the suggestions and staff decisions, with all AI wording encrypted; the
+backend sends the evidence again with every call. It is deleted
+CAREPLAN_AI_AGENT_SESSION_TTL_HOURS after it starts. A trace keeps, for a saved
+care plan, its statements (encrypted) and references to the evidence behind
+them, so "View" works once the backend sends that evidence.
 
 Tables live in their own `careplan_ai` schema with row level security on, so
 Supabase's auto-generated public API can't read them; this service connects
@@ -27,6 +30,14 @@ from functools import lru_cache
 from typing import Protocol
 
 from careplan_ai.agents.care_plan.schemas import CarePlanSession, CarePlanTrace
+from careplan_ai.agents.care_plan.stored import (
+    session_from_stored,
+    session_to_stored,
+    subject_of,
+    trace_from_stored,
+    trace_to_stored,
+)
+from careplan_ai.api.schemas.agent import StartSessionRequest
 from careplan_ai.core.config import get_settings
 from careplan_ai.core.exceptions import MemoryStoreError
 from careplan_ai.core.logging import get_logger
@@ -34,19 +45,32 @@ from careplan_ai.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+Subject = tuple[int, datetime | None]
+
+
 class SessionStore(Protocol):
     backend: str
 
     async def save_session(self, session: CarePlanSession) -> None: ...
 
-    async def get_session(self, session_id: str) -> CarePlanSession | None: ...
+    async def get_session(
+        self, session_id: str, evidence: StartSessionRequest | None
+    ) -> CarePlanSession | None: ...
+
+    async def session_subject(self, session_id: str) -> Subject | None: ...
 
     async def save_trace(self, trace: CarePlanTrace) -> None: ...
 
-    async def get_trace(self, care_plan_id: int) -> CarePlanTrace | None: ...
+    async def get_trace(
+        self, care_plan_id: int, evidence: StartSessionRequest | None
+    ) -> CarePlanTrace | None: ...
+
+    async def trace_subject(self, care_plan_id: int) -> Subject | None: ...
 
 
 class InMemoryStore:
+    """Holds exactly what the database would - references and sealed wording."""
+
     backend = "in-memory"
 
     def __init__(self) -> None:
@@ -54,18 +78,30 @@ class InMemoryStore:
         self._traces: dict[int, str] = {}
 
     async def save_session(self, session: CarePlanSession) -> None:
-        self._sessions[session.session_id] = session.model_dump_json()
+        self._sessions[session.session_id] = json.dumps(session_to_stored(session))
 
-    async def get_session(self, session_id: str) -> CarePlanSession | None:
+    async def get_session(
+        self, session_id: str, evidence: StartSessionRequest | None
+    ) -> CarePlanSession | None:
         raw = self._sessions.get(session_id)
-        return CarePlanSession.model_validate_json(raw) if raw else None
+        return session_from_stored(json.loads(raw), evidence) if raw else None
+
+    async def session_subject(self, session_id: str) -> Subject | None:
+        raw = self._sessions.get(session_id)
+        return subject_of(json.loads(raw)) if raw else None
 
     async def save_trace(self, trace: CarePlanTrace) -> None:
-        self._traces[trace.care_plan_id] = trace.model_dump_json()
+        self._traces[trace.care_plan_id] = json.dumps(trace_to_stored(trace))
 
-    async def get_trace(self, care_plan_id: int) -> CarePlanTrace | None:
+    async def get_trace(
+        self, care_plan_id: int, evidence: StartSessionRequest | None
+    ) -> CarePlanTrace | None:
         raw = self._traces.get(care_plan_id)
-        return CarePlanTrace.model_validate_json(raw) if raw else None
+        return trace_from_stored(json.loads(raw), evidence) if raw else None
+
+    async def trace_subject(self, care_plan_id: int) -> Subject | None:
+        raw = self._traces.get(care_plan_id)
+        return subject_of(json.loads(raw)) if raw else None
 
 
 class PostgresStore:
@@ -128,7 +164,7 @@ class PostgresStore:
                     session.session_id,
                     session.assessment_template_user_id,
                     session.status.value,
-                    session.model_dump_json(),
+                    json.dumps(session_to_stored(session)),
                     session.created_at,
                     session.updated_at,
                     expires_at,
@@ -137,16 +173,27 @@ class PostgresStore:
 
         await self._run(_save)
 
-    async def get_session(self, session_id: str) -> CarePlanSession | None:
-        def _get(conn) -> CarePlanSession | None:  # type: ignore[no-untyped-def]
+    def _session_row(self, session_id: str):  # type: ignore[no-untyped-def]
+        def _get(conn):  # type: ignore[no-untyped-def]
+            # Expired sessions go on reads too, not only when another is saved.
+            conn.execute("delete from careplan_ai.agent_sessions where expires_at < now()")
             row = conn.execute(
-                "select state from careplan_ai.agent_sessions "
-                "where session_id = %s and expires_at >= now()",
+                "select state from careplan_ai.agent_sessions where session_id = %s",
                 (session_id,),
             ).fetchone()
-            return CarePlanSession.model_validate(_as_dict(row[0])) if row else None
+            return _as_dict(row[0]) if row else None
 
-        return await self._run(_get)
+        return self._run(_get)
+
+    async def get_session(
+        self, session_id: str, evidence: StartSessionRequest | None
+    ) -> CarePlanSession | None:
+        raw = await self._session_row(session_id)
+        return session_from_stored(raw, evidence) if raw else None
+
+    async def session_subject(self, session_id: str) -> Subject | None:
+        raw = await self._session_row(session_id)
+        return subject_of(raw) if raw else None
 
     async def save_trace(self, trace: CarePlanTrace) -> None:
         def _save(conn) -> None:  # type: ignore[no-untyped-def]
@@ -163,22 +210,32 @@ class PostgresStore:
                     trace.care_plan_id,
                     trace.session_id,
                     trace.assessment_template_user_id,
-                    trace.model_dump_json(),
+                    json.dumps(trace_to_stored(trace)),
                     trace.created_at,
                 ),
             )
 
         await self._run(_save)
 
-    async def get_trace(self, care_plan_id: int) -> CarePlanTrace | None:
-        def _get(conn) -> CarePlanTrace | None:  # type: ignore[no-untyped-def]
+    def _trace_row(self, care_plan_id: int):  # type: ignore[no-untyped-def]
+        def _get(conn):  # type: ignore[no-untyped-def]
             row = conn.execute(
                 "select trace from careplan_ai.care_plan_traces where care_plan_id = %s",
                 (care_plan_id,),
             ).fetchone()
-            return CarePlanTrace.model_validate(_as_dict(row[0])) if row else None
+            return _as_dict(row[0]) if row else None
 
-        return await self._run(_get)
+        return self._run(_get)
+
+    async def get_trace(
+        self, care_plan_id: int, evidence: StartSessionRequest | None
+    ) -> CarePlanTrace | None:
+        raw = await self._trace_row(care_plan_id)
+        return trace_from_stored(raw, evidence) if raw else None
+
+    async def trace_subject(self, care_plan_id: int) -> Subject | None:
+        raw = await self._trace_row(care_plan_id)
+        return subject_of(raw) if raw else None
 
 
 def _as_dict(value: object) -> dict:  # type: ignore[type-arg]

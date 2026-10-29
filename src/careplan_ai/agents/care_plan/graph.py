@@ -1,6 +1,6 @@
 """The care plan workflow: two agents, with code around them.
 
-    pack -> retrieve -> agent --> verify --(not supported, revisions left)--> agent
+    pack -> prepare -> agent --> verify --(not supported, revisions left)--> agent
                                     |
                                     v
                                   apply -> done
@@ -8,8 +8,12 @@
 * pack     (code, packs.py) every must-read record, plus each need's best
            keyword matches across ALL the resident's records, to a small
            budget. Evidence is passed in - never fetched or rewritten by a model.
-* retrieve (code + Pinecone) this home's style examples for this pathway
-           (OPENCARE-51). Optional: none = the neutral house style.
+* prepare  two things at once:
+           read     (READER AGENTS, read.py) every record the pack has no room
+                    for, in parallel chunks; the relevant ones join the pack
+                    and any need they raise must be covered. Nothing goes unread.
+           retrieve (code + Pinecone) this home's style examples for this
+                    pathway (OPENCARE-51). Optional: none = the neutral style.
 * agent    the CARE PLAN AGENT (agent.py): a tool loop - searches the
            resident's records when something could change the plan, then
            submits; code checks each submission and sends back the exact
@@ -23,6 +27,7 @@
 The order is fixed: the models never choose what happens next.
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import TypedDict
@@ -39,10 +44,12 @@ from careplan_ai.agents.care_plan.agent import (
 )
 from careplan_ai.agents.care_plan.packs import Pack, build_pack
 from careplan_ai.agents.care_plan.prompts import build_agent_messages
+from careplan_ai.agents.care_plan.read import Reading, read_rest
 from careplan_ai.agents.care_plan.schemas import (
     DraftPlanOut,
     EvidenceItem,
     Pattern,
+    ScreenedRecord,
     SourceType,
     VerdictOut,
 )
@@ -71,6 +78,7 @@ class DraftState(TypedDict, total=False):
     organisation_id: int | None
     evidence: list[EvidenceItem]
     pack: Pack
+    reading: Reading
     examples: list[StyleExample]
     run: AgentRun
     feedback: list[str]
@@ -101,15 +109,23 @@ def _retrieval_query(evidence: list[EvidenceItem]) -> str:
     return "\n".join(lines)
 
 
-async def _retrieve(state: DraftState) -> DraftState:
+async def _prepare(state: DraftState) -> DraftState:
     name = state.get("resident_name")
-    examples = await find_examples(
-        state.get("organisation_id"),
-        state.get("pathway"),
-        _retrieval_query(state["pack"].shown),
-        resident_names=[name] if name else [],
+    pack = state["pack"]
+    examples, reading = await asyncio.gather(
+        find_examples(
+            state.get("organisation_id"),
+            state.get("pathway"),
+            _retrieval_query(pack.shown),
+            resident_names=[name] if name else [],
+        ),
+        read_rest(state["evidence"], pack.shown,
+                  resident_name=name, pathway=state.get("pathway")),
     )
-    return {"examples": examples}
+    if reading.added:
+        ids = {e.id for e in pack.shown} | {e.id for e in reading.added}
+        pack = Pack(shown=[e for e in state["evidence"] if e.id in ids], index=pack.index)
+    return {"examples": examples, "reading": reading, "pack": pack}
 
 
 def _validator(state: DraftState):  # type: ignore[no-untyped-def]
@@ -122,6 +138,7 @@ def _validator(state: DraftState):  # type: ignore[no-untyped-def]
             examples=[e.text for e in state.get("examples", [])],
             resident_sources=[e.text for e in state["evidence"]],
             with_outcomes=False,
+            required_groups=state["reading"].required,
         )
 
     return validate
@@ -203,13 +220,13 @@ def _apply(state: DraftState) -> DraftState:
 def build_draft_graph() -> CompiledStateGraph:
     graph = StateGraph(DraftState)
     graph.add_node("pack", _pack)
-    graph.add_node("retrieve", _retrieve)
+    graph.add_node("prepare", _prepare)
     graph.add_node("agent", _agent)
     graph.add_node("verify", _verify)
     graph.add_node("apply", _apply)
     graph.set_entry_point("pack")
-    graph.add_edge("pack", "retrieve")
-    graph.add_edge("retrieve", "agent")
+    graph.add_edge("pack", "prepare")
+    graph.add_edge("prepare", "agent")
     graph.add_edge("agent", "verify")
     graph.add_conditional_edges("verify", _after_verify, {"agent": "agent", "apply": "apply"})
     graph.add_edge("apply", END)
@@ -222,6 +239,9 @@ class DraftOutcome:
     model_id: str
     fallback_used: bool
     omitted: list[str] = field(default_factory=list)
+    screened: list[ScreenedRecord] = field(default_factory=list)
+    reader_calls: int = 0
+    reader_seconds: float = 0.0
     examples: list[StyleExample] = field(default_factory=list)
     patterns: list[Pattern] = field(default_factory=list)
     revisions: int = 0
@@ -246,13 +266,19 @@ async def run_draft(
         }
     )
     run: AgentRun = final["run"]
+    reading: Reading = final["reading"]
     _, best = require_plan(run)
+    screened = {s.evidence_id for s in reading.screened}
     return DraftOutcome(
         result=final["final"],
         model_id=run.best_model_id,
         fallback_used=run.best_role == "fallback",
-        # Records the agent never saw - neither in its pack nor in a search.
-        omitted=[e.id for e in evidence if e.id not in run.seen],
+        # Records NO agent read - not in the pack, not found by a search, and
+        # not read by a reader agent (only when a reader failed, or is off).
+        omitted=[e.id for e in evidence if e.id not in run.seen and e.id not in screened],
+        screened=reading.screened,
+        reader_calls=reading.calls,
+        reader_seconds=reading.seconds,
         examples=final.get("examples", []),
         patterns=best.patterns,
         revisions=run.revisions,
