@@ -12,3 +12,4 @@ tiktoken>=0.8
 langgraph>=0.2
 psycopg[binary]>=3.2
 pinecone>=7,<8
+cryptography>=43
