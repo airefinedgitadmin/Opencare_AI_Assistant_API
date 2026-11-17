@@ -62,10 +62,24 @@ _RECORD_REFERENCE = re.compile(
 # OPENCARE-78: an action that gives the reason ("Following review, ...") or is only paperwork about
 # the records ("document that a dentist appointment has been requested") instead of the care.
 # "Following review, ..." as a lead-in (with its comma) - "following review by the TVN" is fine.
+# Paperwork also covers writing down that something happened ("document that she was weighed",
+# "note that a referral has been sent") or filing it ("file this with the chart"). A fact about
+# the resident ("note that she has an upper denture") and "record every drink on the Fluid
+# chart" are not paperwork and are not matched.
 _NOT_CARE = re.compile(
     r"\bfollowing\s+(?:the\s+|a\s+|his\s+|her\s+|their\s+|this\s+)?(?:recent\s+)?reviews?\s*,"
     r"|\b(?:document|note|record|log)\s+that\b.*\b(?:has|have)\s+been\s+"
-    r"(?:requested|made|booked|arranged|sent|referred)\b",
+    r"(?:requested|made|booked|arranged|sent|referred)\b"
+    r"|\b(?:document|note|record|log)\s+that\s+(?:\S+\s+){1,3}?"
+    r"(?:was|were|had|(?:has|have)\s+been)\b"
+    r"|\bfile\s+(?:this|it|these|them)\b",
+    re.IGNORECASE,
+)
+# A reason clause in an action ("... because she was coughing", "due to ..."). The action is still
+# care, so it is kept - the agent is only asked to take the reason out. "Medication due to be
+# given" is a time, not a reason.
+_REASON = re.compile(
+    r"\bbecause\b|\bdue\s+to\b(?!\s+be\b)|\bas\s+a\s+result\s+of\b|\bowing\s+to\b",
     re.IGNORECASE,
 )
 # OPENCARE-79: equipment as a status ("Staff should arrange a sensor mat as requested"), not how it
@@ -491,6 +505,13 @@ def validate_draft(
                 f"({', '.join(borrowed)}) and was dropped."
             )
             continue
+
+        if _REASON.search(text):
+            # Kept: dropping it could lose the care (e.g. a texture-modified diet).
+            problems.append(
+                f"Action \"{text[:80]}\" explains why. Keep the care and take the reason out; "
+                "the reason stays in the cited evidence."
+            )
 
         sources = [by_id[i].text for i in ids] + [by_id[i].label for i in ids] + context_sources
         warnings = detail_warnings(text, sources)

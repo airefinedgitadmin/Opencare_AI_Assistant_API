@@ -14,6 +14,7 @@ from careplan_ai.agents.care_plan.evidence import (
     unanswered_questions,
 )
 from careplan_ai.agents.care_plan.graph import run_draft
+from careplan_ai.agents.care_plan.prompts import outcome_wording
 from careplan_ai.agents.care_plan.read import NOT_RELEVANT
 from careplan_ai.agents.care_plan.schemas import (
     ActionCard,
@@ -330,7 +331,11 @@ async def write_outcomes(
         own = [by_id[i] for i in card.evidence_ids if i in by_id]
         quotes[card.id] = own + [e for e in previous_outcomes if e not in own]
     context = [s for s in (session.resident_name, session.pathway) if s]
-    resident_stems = stems([e.text for e in session.evidence] + context)
+    # Wording the outcome rules give for this pathway ("weight stays stable by the next review")
+    # is the rules' own, not copied from a style example.
+    resident_stems = stems(
+        [e.text for e in session.evidence] + context + [outcome_wording(session.pathway)]
+    )
     example_stems = stems([e.text for e in session.style_examples])
 
     async def attempt(
