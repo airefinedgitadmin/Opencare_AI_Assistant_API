@@ -59,6 +59,14 @@ _RECORD_REFERENCE = re.compile(
     r"|\bas\s+per\s+(?:the\s+)?(?:assessment|records?|notes?)\b",
     re.IGNORECASE,
 )
+# OPENCARE-78: an action that gives the reason ("Following review, ...") or is only paperwork about
+# the records ("document that a dentist appointment has been requested") instead of the care.
+_NOT_CARE = re.compile(
+    r"\bfollowing\s+(?:the\s+|a\s+|his\s+|her\s+|their\s+|this\s+)?(?:recent\s+)?reviews?\b"
+    r"|\b(?:document|note|record|log)\s+that\b.*\b(?:has|have)\s+been\s+"
+    r"(?:requested|made|booked|arranged|sent|referred)\b",
+    re.IGNORECASE,
+)
 MAX_MISSING_WORDS = 6
 
 # Function words and words every care plan uses - never "details".
@@ -448,6 +456,14 @@ def validate_draft(
                 f"Action \"{text[:80]}\" refers to the records instead of describing the care "
                 "and was dropped. Write the care itself, or put a P item that states no care "
                 "in carry_over."
+            )
+            continue
+        if _NOT_CARE.search(text):
+            dropped += 1
+            problems.append(
+                f"Action \"{text[:80]}\" gives a reason or only records paperwork, and was "
+                "dropped. Write only what staff do for the resident (and how often, if the "
+                "evidence says); the reason stays in the cited evidence."
             )
             continue
         borrowed = borrowed_terms(text, source_stems=source_stems, example_stems=example_stems)
