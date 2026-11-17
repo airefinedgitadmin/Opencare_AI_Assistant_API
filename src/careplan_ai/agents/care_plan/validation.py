@@ -61,10 +61,19 @@ _RECORD_REFERENCE = re.compile(
 )
 # OPENCARE-78: an action that gives the reason ("Following review, ...") or is only paperwork about
 # the records ("document that a dentist appointment has been requested") instead of the care.
+# "Following review, ..." as a lead-in (with its comma) - "following review by the TVN" is fine.
 _NOT_CARE = re.compile(
-    r"\bfollowing\s+(?:the\s+|a\s+|his\s+|her\s+|their\s+|this\s+)?(?:recent\s+)?reviews?\b"
+    r"\bfollowing\s+(?:the\s+|a\s+|his\s+|her\s+|their\s+|this\s+)?(?:recent\s+)?reviews?\s*,"
     r"|\b(?:document|note|record|log)\s+that\b.*\b(?:has|have)\s+been\s+"
     r"(?:requested|made|booked|arranged|sent|referred)\b",
+    re.IGNORECASE,
+)
+# OPENCARE-79: equipment as a status ("Staff should arrange a sensor mat as requested"), not how it
+# is used. Only when the action itself is arranging or ordering - "help Cathy get dressed as
+# agreed" is care.
+_EQUIPMENT_STATUS = re.compile(
+    r"^\s*(?:staff\s+should\s+)?(?:arrange|request|order|obtain)\b[^.]*"
+    r"\bas\s+(?:requested|discussed|agreed)\s*[.!]?\s*$",
     re.IGNORECASE,
 )
 MAX_MISSING_WORDS = 6
@@ -464,6 +473,14 @@ def validate_draft(
                 f"Action \"{text[:80]}\" gives a reason or only records paperwork, and was "
                 "dropped. Write only what staff do for the resident (and how often, if the "
                 "evidence says); the reason stays in the cited evidence."
+            )
+            continue
+        if _EQUIPMENT_STATUS.search(text):
+            dropped += 1
+            problems.append(
+                f"Action \"{text[:80]}\" says only that equipment is arranged, and was dropped. "
+                "Say how staff use the equipment for the resident, using only details the "
+                "evidence gives."
             )
             continue
         borrowed = borrowed_terms(text, source_stems=source_stems, example_stems=example_stems)

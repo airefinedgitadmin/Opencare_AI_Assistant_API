@@ -50,26 +50,26 @@ _WHITESPACE = re.compile(r"\s+")
 # OPENCARE-80: text staff typed as a placeholder ("test", "tbc", "xxx", "asdf") is not a fact
 # about the resident - it is never evidence, so it can't be cited or carried over.
 _PLACEHOLDER_TEXT = re.compile(
-    r"(?:test(?:ing)?\s*\d*|tbc|tba|todo|to do|xx+|asdf\w*|qwerty|dummy|lorem ipsum\b.*|"
-    r"[\W_]*)[.!?]*",
+    r"(?:test(?:ing)?\s*\d*|tbc|tba|todo|to do|xx+|asdf\w*|qwerty|dummy|lorem ipsum\b.*)[.!?]*",
     re.IGNORECASE,
 )
 
 
 # OPENCARE-78: words that say nothing when they are the whole of a care plan or note line. Not
 # applied to assessment answers or chart values, where "None" or "N/A" is a real answer.
-_EMPTY_FREE_TEXT = re.compile(r"(?:n\s*/\s*a|na|ok|nil|none)[.!?]*", re.IGNORECASE)
+_EMPTY_FREE_TEXT = re.compile(r"(?:n\s*/\s*a|na|ok|nil|none)[.!?]*|[\W_]+", re.IGNORECASE)
 
 
 def is_empty_free_text(sentence: str) -> bool:
-    """Placeholder text, or a care plan / note line that is only "n/a", "ok", "nil" or "none"."""
+    """Placeholder text, or a care plan / note line that is only "n/a", "ok", "nil", "none" or
+    punctuation ("...", "-")."""
     text = " ".join(sentence.split())
     return is_placeholder(text) or bool(_EMPTY_FREE_TEXT.fullmatch(text))
 
 
 def is_placeholder(sentence: str) -> bool:
-    """A short sentence that says nothing ("test", "Test.", "tbc", "xxx", "..."). Placeholders are
-    short; anything longer is real text and is never dropped."""
+    """A short sentence that says nothing ("test", "Test.", "tbc", "xxx"). Placeholders are short;
+    anything longer is real text and is never dropped."""
     text = " ".join(sentence.split())
     return len(text) <= 20 and bool(_PLACEHOLDER_TEXT.fullmatch(text))
 
@@ -91,7 +91,9 @@ class _TextExtractor(HTMLParser):
         self.parts.append(data)
 
 
-def to_sentences(text: str | None, *, drop_placeholders: bool = False) -> list[str]:
+def to_sentences(
+    text: str | None, *, drop_placeholders: bool = False, dropped: list[str] | None = None
+) -> list[str]:
     """Plain text or Quill HTML -> clean sentences, in order.
 
     Paragraphs and list items are kept apart even when they lack a full stop
@@ -108,20 +110,27 @@ def to_sentences(text: str | None, *, drop_placeholders: bool = False) -> list[s
         line = _WHITESPACE.sub(" ", line).strip()
         if not line:
             continue
-        sentences.extend(
-            s.strip() for s in _SENTENCE_BOUNDARY.split(line)
-            if len(s.strip()) > 2 and not (drop_placeholders and is_empty_free_text(s))
-        )
+        for s in _SENTENCE_BOUNDARY.split(line):
+            s = s.strip()
+            if len(s) <= 2:
+                continue
+            if drop_placeholders and is_empty_free_text(s):
+                if dropped is not None:
+                    dropped.append(s)
+                continue
+            sentences.append(s)
     return sentences
 
 
-def _note_sentences(note: ReviewNoteIn | NoteIn) -> list[str]:
-    sentences = to_sentences(note.note, drop_placeholders=True)
+def _note_sentences(note: ReviewNoteIn | NoteIn, dropped: list[str] | None = None) -> list[str]:
+    sentences = to_sentences(note.note, drop_placeholders=True, dropped=dropped)
     # A title can carry facts of its own ("Fall in the lounge"); keep it unless
     # the note already says it - or it is placeholder text (OPENCARE-80).
     title = " ".join((note.title or "").split())
-    if (len(title) > 2 and not is_empty_free_text(title)
-            and title.casefold() not in " ".join(sentences).casefold()):
+    if len(title) > 2 and is_empty_free_text(title):
+        if dropped is not None:
+            dropped.append(title)
+    elif len(title) > 2 and title.casefold() not in " ".join(sentences).casefold():
         sentences.insert(0, title)
     return sentences
 
@@ -144,8 +153,16 @@ def unanswered_questions(request: StartSessionRequest) -> list[str]:
     ]
 
 
-def build_evidence(request: StartSessionRequest) -> list[EvidenceItem]:
+def build_evidence(
+    request: StartSessionRequest, dropped_records: set[str] | None = None
+) -> list[EvidenceItem]:
+    """dropped_records, if given, collects one key per record that had placeholder text left out
+    (OPENCARE-80) - so staff are told how many records, counted by the same rule."""
     items: list[EvidenceItem] = []
+
+    def note_drop(key: str, dropped: list[str]) -> None:
+        if dropped and dropped_records is not None:
+            dropped_records.add(key)
 
     a_count = 0
     if request.assessment is not None:
@@ -153,6 +170,7 @@ def build_evidence(request: StartSessionRequest) -> list[EvidenceItem]:
             if answer.answer is None or not answer.answer.strip():
                 continue  # an unanswered question can't flag a risk
             if is_placeholder(answer.answer):
+                note_drop(f"answer:{answer.question_id or answer.question}", [answer.answer])
                 continue  # "test" / "tbc" says nothing about the resident (OPENCARE-80)
             a_count += 1
             items.append(
@@ -169,7 +187,8 @@ def build_evidence(request: StartSessionRequest) -> list[EvidenceItem]:
     p_count = o_count = 0
     for plan in request.previous_care_plans:
         ref = str(plan.care_plan_id) if plan.care_plan_id is not None else None
-        for sentence in to_sentences(plan.action, drop_placeholders=True):
+        plan_dropped: list[str] = []
+        for sentence in to_sentences(plan.action, drop_placeholders=True, dropped=plan_dropped):
             p_count += 1
             items.append(
                 EvidenceItem(
@@ -181,7 +200,7 @@ def build_evidence(request: StartSessionRequest) -> list[EvidenceItem]:
                     text=sentence,
                 )
             )
-        for sentence in to_sentences(plan.outcome, drop_placeholders=True):
+        for sentence in to_sentences(plan.outcome, drop_placeholders=True, dropped=plan_dropped):
             o_count += 1
             items.append(
                 EvidenceItem(
@@ -193,10 +212,14 @@ def build_evidence(request: StartSessionRequest) -> list[EvidenceItem]:
                     text=sentence,
                 )
             )
+        note_drop(f"plan:{ref}:{id(plan)}", plan_dropped)
 
     r_count = 0
     for review in request.review_notes:
-        for sentence in _note_sentences(review):
+        review_dropped: list[str] = []
+        review_sentences = _note_sentences(review, review_dropped)
+        note_drop(f"note:{review.note_id}:{id(review)}", review_dropped)
+        for sentence in review_sentences:
             r_count += 1
             items.append(
                 EvidenceItem(
@@ -214,7 +237,10 @@ def build_evidence(request: StartSessionRequest) -> list[EvidenceItem]:
     counts = {prefix: 0 for _, prefix in _NOTE_SOURCES.values()}
     for note in request.notes:
         source_type, prefix = _NOTE_SOURCES[note.note_type]
-        for sentence in _note_sentences(note):
+        note_dropped: list[str] = []
+        sentences = _note_sentences(note, note_dropped)
+        note_drop(f"note:{note.note_id}:{id(note)}", note_dropped)
+        for sentence in sentences:
             counts[prefix] += 1
             items.append(
                 EvidenceItem(
@@ -233,8 +259,9 @@ def build_evidence(request: StartSessionRequest) -> list[EvidenceItem]:
     for related in request.related_care_plans:
         ref = str(related.care_plan_id) if related.care_plan_id is not None else None
         what = ", ".join(p for p in (related.pathway, related.status) if p)
+        related_dropped: list[str] = []
         for part, text in (("action", related.action), ("outcome", related.outcome)):
-            for sentence in to_sentences(text, drop_placeholders=True):
+            for sentence in to_sentences(text, drop_placeholders=True, dropped=related_dropped):
                 h_count += 1
                 items.append(
                     EvidenceItem(
@@ -249,11 +276,14 @@ def build_evidence(request: StartSessionRequest) -> list[EvidenceItem]:
                         historical=True,
                     )
                 )
+        note_drop(f"plan:{ref}:{id(related)}", related_dropped)
 
     v_count = 0
     recorded: list[ObservationIn] = []
     for entry in request.observations:
-        text = observation_text(entry)
+        entry_dropped: list[str] = []
+        text = observation_text(entry, entry_dropped)
+        note_drop(f"observation:{entry.entry_id}:{id(entry)}", entry_dropped)
         if not text:
             continue  # an empty entry records nothing
         v_count += 1
@@ -342,31 +372,16 @@ def chart_summaries(entries: list[ObservationIn]) -> list[EvidenceItem]:
     return summaries
 
 
-def observation_text(entry: ObservationIn) -> str:
+def observation_text(entry: ObservationIn, dropped: list[str] | None = None) -> str:
     """'Field: value; Field: value' for the fields that were filled in."""
     parts = []
     for v in entry.values:
         value = _WHITESPACE.sub(" ", v.value or "").strip()
         field = _WHITESPACE.sub(" ", v.field).strip()
-        if value and not is_placeholder(value):
+        if value and is_placeholder(value):
+            if dropped is not None:
+                dropped.append(value)
+            continue
+        if value:
             parts.append(f"{field}: {value}" if field else value)
     return "; ".join(parts)
-
-
-def placeholder_count(request: StartSessionRequest) -> int:
-    """How many pieces of placeholder text ("test", "tbc", ...) were left out of the evidence -
-    told to staff, so a record that disappeared is never a surprise (OPENCARE-80)."""
-    texts: list[str] = []
-    if request.assessment is not None:
-        texts += [a.answer for a in request.assessment.answers if a.answer and a.answer.strip()]
-    free: list[str] = []
-    for plan in [*request.previous_care_plans, *request.related_care_plans]:
-        free += to_sentences(plan.action) + to_sentences(plan.outcome)
-    for note in [*request.review_notes, *request.notes]:
-        free += to_sentences(note.note)
-        if note.title and len(note.title.strip()) > 2:
-            free.append(note.title)
-    for entry in request.observations:
-        texts += [v.value for v in entry.values if v.value and v.value.strip()]
-    return (sum(1 for t in texts if is_placeholder(t))
-            + sum(1 for t in free if is_empty_free_text(t)))

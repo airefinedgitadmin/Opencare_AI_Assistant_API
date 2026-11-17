@@ -3,7 +3,6 @@
 from careplan_ai.agents.care_plan.evidence import (
     build_evidence,
     is_placeholder,
-    placeholder_count,
     to_sentences,
 )
 from careplan_ai.agents.care_plan.prompts import (
@@ -17,12 +16,12 @@ from careplan_ai.api.schemas.agent import StartSessionRequest
 
 
 def test_placeholder_text_is_recognised() -> None:
-    junk_texts = ["test", "Test.", "TEST", "testing", "test 2", "tbc", "TBA", "xxx", "asdf",
-                  "...", "-"]
+    junk_texts = ["test", "Test.", "TEST", "testing", "test 2", "tbc", "TBA", "xxx", "asdf"]
     for junk in junk_texts:
         assert is_placeholder(junk), junk
     for real in ["Test results awaited from GP.", "Weighed 61.2 kg.", "Eats puddings.", "No pain.",
-                 "ABC", "ABC chart started.", "Lubi herbatę.", "喜欢喝茶"]:
+                 "ABC", "ABC chart started.", "Lubi herbatę.", "喜欢喝茶",
+                 "✓", "+", "-"]:  # a tick or +/- can be a real answer
         assert not is_placeholder(real), real
 
 
@@ -56,14 +55,15 @@ def test_a_previous_care_plan_saying_test_gives_no_evidence() -> None:
         }
     )
 
-    evidence = build_evidence(request)
+    dropped: set[str] = set()
+    evidence = build_evidence(request, dropped)
 
     assert all(e.source_type != SourceType.PREVIOUS_CARE_PLAN for e in evidence)
     assert all("test" not in e.text.casefold() for e in evidence)  # a note's title too
     answers = [e.text for e in evidence if e.source_type == SourceType.ASSESSMENT]
     assert answers == ["1 - Medium risk"]
-    # action, outcome, the "tbc" answer, the note and its title
-    assert placeholder_count(request) == 5
+    # Counted per record: the plan (action and outcome), the "tbc" answer, the "Test" note
+    assert len(dropped) == 3
 
 
 def test_draft_rules_keep_the_pathway_and_use_its_charts_and_score() -> None:
