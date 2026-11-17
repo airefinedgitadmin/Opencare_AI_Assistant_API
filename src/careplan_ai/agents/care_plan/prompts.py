@@ -66,6 +66,12 @@ guessing, put its id in carry_over instead - staff see it exactly as written.
 - If items need the same or a similar action, combine them into ONE action \
 that cites all of them - and keep every detail of each item (e.g. "upper \
 dentures", "after meals"). Combining must never drop information.
+- An action says only WHAT staff do. It never explains why ("Following \
+review, he is no longer independent..." - the reason is in the cited evidence, \
+which staff see under View). It is never paperwork about the records \
+("document that a dentist appointment has been requested"): write the care it \
+leads to, or leave it out. Recording on a chart IS care when the evidence asks \
+for it ("record every drink on the Fluid chart").
 - STAY IN THE PATHWAY. Every action is about the pathway named after \
 "Pathway:". Content that belongs to another pathway (e.g. a dentist \
 appointment in a MUST plan) is used ONLY where it directly affects this \

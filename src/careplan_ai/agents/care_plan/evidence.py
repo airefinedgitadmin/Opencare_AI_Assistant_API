@@ -56,6 +56,17 @@ _PLACEHOLDER_TEXT = re.compile(
 )
 
 
+# OPENCARE-78: words that say nothing when they are the whole of a care plan or note line. Not
+# applied to assessment answers or chart values, where "None" or "N/A" is a real answer.
+_EMPTY_FREE_TEXT = re.compile(r"(?:n\s*/\s*a|na|ok|nil|none)[.!?]*", re.IGNORECASE)
+
+
+def is_empty_free_text(sentence: str) -> bool:
+    """Placeholder text, or a care plan / note line that is only "n/a", "ok", "nil" or "none"."""
+    text = " ".join(sentence.split())
+    return is_placeholder(text) or bool(_EMPTY_FREE_TEXT.fullmatch(text))
+
+
 def is_placeholder(sentence: str) -> bool:
     """A short sentence that says nothing ("test", "Test.", "tbc", "xxx", "..."). Placeholders are
     short; anything longer is real text and is never dropped."""
@@ -99,7 +110,7 @@ def to_sentences(text: str | None, *, drop_placeholders: bool = False) -> list[s
             continue
         sentences.extend(
             s.strip() for s in _SENTENCE_BOUNDARY.split(line)
-            if len(s.strip()) > 2 and not (drop_placeholders and is_placeholder(s))
+            if len(s.strip()) > 2 and not (drop_placeholders and is_empty_free_text(s))
         )
     return sentences
 
@@ -109,7 +120,7 @@ def _note_sentences(note: ReviewNoteIn | NoteIn) -> list[str]:
     # A title can carry facts of its own ("Fall in the lounge"); keep it unless
     # the note already says it - or it is placeholder text (OPENCARE-80).
     title = " ".join((note.title or "").split())
-    if (len(title) > 2 and not is_placeholder(title)
+    if (len(title) > 2 and not is_empty_free_text(title)
             and title.casefold() not in " ".join(sentences).casefold()):
         sentences.insert(0, title)
     return sentences
@@ -348,12 +359,14 @@ def placeholder_count(request: StartSessionRequest) -> int:
     texts: list[str] = []
     if request.assessment is not None:
         texts += [a.answer for a in request.assessment.answers if a.answer and a.answer.strip()]
+    free: list[str] = []
     for plan in [*request.previous_care_plans, *request.related_care_plans]:
-        texts += to_sentences(plan.action) + to_sentences(plan.outcome)
+        free += to_sentences(plan.action) + to_sentences(plan.outcome)
     for note in [*request.review_notes, *request.notes]:
-        texts += to_sentences(note.note)
+        free += to_sentences(note.note)
         if note.title and len(note.title.strip()) > 2:
-            texts.append(note.title)
+            free.append(note.title)
     for entry in request.observations:
         texts += [v.value for v in entry.values if v.value and v.value.strip()]
-    return sum(1 for t in texts if is_placeholder(t))
+    return (sum(1 for t in texts if is_placeholder(t))
+            + sum(1 for t in free if is_empty_free_text(t)))
