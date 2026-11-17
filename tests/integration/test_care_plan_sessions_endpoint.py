@@ -692,7 +692,7 @@ def test_every_record_is_used_and_unanswered_questions_are_listed(
     assert session["notices"] == [
         "Bedroom Fire Risk Assessment (BFRA) has no answers yet - complete it first: "
         "suggestions are built from its answers.",
-        '3 entries with placeholder text (e.g. "test") left out.',
+        'Placeholder text (e.g. "test") left out of 2 records.',
         "Not answered in Bedroom Fire Risk Assessment (BFRA): Does the resident smoke?; "
         "Are there electrical heaters in the room?.",
         "The AI read the one record.",

@@ -72,6 +72,9 @@ which staff see under View). It is never paperwork about the records \
 ("document that a dentist appointment has been requested"): write the care it \
 leads to, or leave it out. Recording on a chart IS care when the evidence asks \
 for it ("record every drink on the Fluid chart").
+- An action about equipment says how staff use it, not its status ("place the \
+sensor mat by Cathy's bed at night and respond as soon as it alerts", not \
+"arrange a sensor mat as requested"), using only details the evidence gives.
 - STAY IN THE PATHWAY. Every action is about the pathway named after \
 "Pathway:". Content that belongs to another pathway (e.g. a dentist \
 appointment in a MUST plan) is used ONLY where it directly affects this \

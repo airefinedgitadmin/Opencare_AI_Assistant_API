@@ -11,7 +11,6 @@ import uuid
 from careplan_ai.agents.care_plan import llm
 from careplan_ai.agents.care_plan.evidence import (
     build_evidence,
-    placeholder_count,
     unanswered_questions,
 )
 from careplan_ai.agents.care_plan.graph import run_draft
@@ -72,7 +71,8 @@ MAX_UNANSWERED_LISTED = 15
 
 
 def _notices(
-    request: StartSessionRequest, evidence: list[EvidenceItem], *, drafted: bool
+    request: StartSessionRequest, evidence: list[EvidenceItem], *, drafted: bool,
+    ignored: int = 0,
 ) -> list[str]:
     """What staff need to know about the records behind the suggestions."""
     pathway = request.pathway or "this assessment"
@@ -87,11 +87,10 @@ def _notices(
             f"{pathway} has no answers yet - complete it first: suggestions are built "
             "from its answers."
         )
-    ignored = placeholder_count(request)
     if ignored:
         notices.append(
-            f"{ignored} {'entry' if ignored == 1 else 'entries'} with placeholder text "
-            "(e.g. \"test\") left out."
+            f"Placeholder text (e.g. \"test\") left out of {ignored} "
+            f"record{'' if ignored == 1 else 's'}."
         )
     unanswered = unanswered_questions(request)
     if unanswered:
@@ -121,8 +120,9 @@ def coverage_notice(
 
 
 async def start_session(request: StartSessionRequest) -> SessionView:
-    evidence = build_evidence(request)
-    if not evidence and not unanswered_questions(request) and not placeholder_count(request):
+    dropped: set[str] = set()
+    evidence = build_evidence(request, dropped)
+    if not evidence and not unanswered_questions(request) and not dropped:
         raise InvalidRequestError(
             "No evidence to draft from - send the assessment, a previous care plan or a note"
         )
@@ -141,7 +141,7 @@ async def start_session(request: StartSessionRequest) -> SessionView:
             created_at=now,
             updated_at=now,
             evidence=[],
-            notices=_notices(request, evidence, drafted=False),
+            notices=_notices(request, evidence, drafted=False, ignored=len(dropped)),
             generation=GenerationInfo(model_id="none"),
         )
         await get_session_store().save_session(session)
@@ -167,7 +167,7 @@ async def start_session(request: StartSessionRequest) -> SessionView:
         evidence=evidence,
         screened=outcome.screened,
         omitted=outcome.omitted,
-        notices=_notices(request, evidence, drafted=True)
+        notices=_notices(request, evidence, drafted=True, ignored=len(dropped))
         + [coverage_notice(evidence, outcome.screened, outcome.omitted)],
         risks=result.risks,
         patterns=outcome.patterns,
