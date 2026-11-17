@@ -9,7 +9,11 @@ finalize   after the backend saves the care plan: store the per-statement trace
 import uuid
 
 from careplan_ai.agents.care_plan import llm
-from careplan_ai.agents.care_plan.evidence import build_evidence, unanswered_questions
+from careplan_ai.agents.care_plan.evidence import (
+    build_evidence,
+    placeholder_count,
+    unanswered_questions,
+)
 from careplan_ai.agents.care_plan.graph import run_draft
 from careplan_ai.agents.care_plan.read import NOT_RELEVANT
 from careplan_ai.agents.care_plan.schemas import (
@@ -83,6 +87,12 @@ def _notices(
             f"{pathway} has no answers yet - complete it first: suggestions are built "
             "from its answers."
         )
+    ignored = placeholder_count(request)
+    if ignored:
+        notices.append(
+            f"{ignored} {'entry' if ignored == 1 else 'entries'} with placeholder text "
+            "(e.g. \"test\") left out."
+        )
     unanswered = unanswered_questions(request)
     if unanswered:
         listed = "; ".join(unanswered[:MAX_UNANSWERED_LISTED])
@@ -104,14 +114,15 @@ def coverage_notice(
             "yourself before saving."
         )
     not_relevant = sum(1 for s in screened if s.kind == NOT_RELEVANT)
-    return f"The AI read all {total} records." + (
+    read = "the one record" if total == 1 else f"all {total} records"
+    return f"The AI read {read}." + (
         f" {not_relevant} of them have nothing for this pathway." if not_relevant else ""
     )
 
 
 async def start_session(request: StartSessionRequest) -> SessionView:
     evidence = build_evidence(request)
-    if not evidence and not unanswered_questions(request):
+    if not evidence and not unanswered_questions(request) and not placeholder_count(request):
         raise InvalidRequestError(
             "No evidence to draft from - send the assessment, a previous care plan or a note"
         )
@@ -331,6 +342,7 @@ async def write_outcomes(
             actions=[(c.id, c.text, quotes[c.id]) for c in todo],
             examples=session.style_examples,
             feedback=feedback,
+            pathway=session.pathway,
         )
         written = {o.ref.strip(): o for o in out.outcomes}
         drafts: dict[str, Suggestion] = {}
