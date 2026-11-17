@@ -6,6 +6,7 @@ evidence block (and any style examples) at the end changes per resident.
 """
 
 import json
+import re
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
@@ -19,7 +20,7 @@ from careplan_ai.agents.care_plan.schemas import (
     RiskFlagOut,
     SourceType,
 )
-from careplan_ai.library.models import StyleExample
+from careplan_ai.library.models import StyleExample, pathway_key
 
 DRAFT_SYSTEM_PROMPT = """\
 You help care staff in a UK care home write a care plan for one resident and \
@@ -67,11 +68,15 @@ guessing, put its id in carry_over instead - staff see it exactly as written.
 that cites all of them - and keep every detail of each item (e.g. "upper \
 dentures", "after meals"). Combining must never drop information.
 - An action says only WHAT staff do. It never explains why ("Following \
-review, he is no longer independent..." - the reason is in the cited evidence, \
-which staff see under View). It is never paperwork about the records \
-("document that a dentist appointment has been requested"): write the care it \
-leads to, or leave it out. Recording on a chart IS care when the evidence asks \
-for it ("record every drink on the Fluid chart").
+review, he is no longer independent...", "... because she was coughing" - the \
+reason is in the cited evidence, which staff see under View). It is never \
+paperwork about the records ("document that a dentist appointment has been \
+requested", "document that she was weighed and file it with the chart"): write \
+the care it leads to, or leave it out. Recording on a chart IS care when the \
+evidence asks for it ("record every drink on the Fluid chart").
+- P and H items are evidence of what was planned before, not wording to copy. \
+Where an earlier plan's line gives a reason, is paperwork or breaks any other \
+rule here, write the care it describes by these rules instead.
 - An action about equipment says how staff use it, not its status ("place the \
 sensor mat by Cathy's bed at night and respond as soon as it alerts", not \
 "arrange a sensor mat as requested"), using only details the evidence gives.
@@ -150,6 +155,9 @@ describes the result for the resident (e.g. "Cathy will ...").
 - Plain, person-centred UK English, one or two sentences.
 """
 
+# Splits the outcome rules from their per-pathway measures (see outcome_wording).
+_MEASURES_HEADING = "WHAT A GOOD OUTCOME MEASURES"
+
 OUTCOME_SYSTEM_PROMPT = """\
 You write the intended OUTCOME for care plan actions that staff in a UK care \
 home have added to a resident's plan, for the pathway named after "Pathway:".
@@ -170,7 +178,7 @@ repeat of another outcome.
 "Resident:". No diagnosis, medicine name or dose unless it is in the quotes.
 7. Cite the ids of the quotes it relies on.
 
-WHAT A GOOD OUTCOME MEASURES, by pathway (a pattern - the facts and targets \
+""" + _MEASURES_HEADING + """, by pathway (a pattern - the facts and targets \
 still come only from the quotes):
 - MUST: weight trend, share of each meal eaten, fluid against target, MUST \
 score at rescreen.
@@ -208,6 +216,30 @@ referral, linked to the flagged risks.
 
 Write exactly one outcome per ref given.
 """
+
+
+def _names_pathway(name: str, pathway: str) -> bool:
+    """A measures line ("Choking Risk", "Bedroom Fire Risk Assessment (BFRA)") is for this
+    pathway when its name, or the short name in brackets, is in the pathway's name."""
+    full, _, short = name.partition("(")
+    names = [pathway_key(full), pathway_key(short.rstrip(")"))]
+    return any(n and re.search(rf"\b{re.escape(n)}\b", pathway) for n in names)
+
+
+def outcome_wording(pathway: str | None) -> str:
+    """The wording the outcome rules themselves give for this pathway: the general rules and
+    this pathway's measures line (or the "any other pathway" line), read from
+    OUTCOME_SYSTEM_PROMPT - so an outcome using it was not copied from a style example."""
+    rules, _, measures = OUTCOME_SYSTEM_PROMPT.partition(_MEASURES_HEADING)
+    lines = dict(
+        line[2:].split(": ", 1) for line in measures.splitlines()
+        if line.startswith("- ") and ": " in line
+    )
+    key = pathway_key(pathway or "")
+    chosen = [text for name, text in lines.items() if key and _names_pathway(name, key)]
+    if not chosen:  # the last line is the one for any other pathway
+        chosen = list(lines.values())[-1:]
+    return " ".join([rules, *chosen])
 
 VERIFY_SYSTEM_PROMPT = """\
 You verify statements in a UK care home resident's care plan. Nothing else.
