@@ -66,22 +66,58 @@ _RECORD_REFERENCE = re.compile(
 # "note that a referral has been sent") or filing it ("file this with the chart"). A fact about
 # the resident ("note that she has an upper denture") and "record every drink on the Fluid
 # chart" are not paperwork and are not matched.
-_NOT_CARE = re.compile(
-    r"\bfollowing\s+(?:the\s+|a\s+|his\s+|her\s+|their\s+|this\s+)?(?:recent\s+)?reviews?\s*,"
-    r"|\b(?:document|note|record|log)\s+that\b.*\b(?:has|have)\s+been\s+"
+_PAPERWORK_PATTERN = (
+    r"\b(?:document|note|record|log)\s+that\b.*\b(?:has|have)\s+been\s+"
     r"(?:requested|made|booked|arranged|sent|referred)\b"
     r"|\b(?:document|note|record|log)\s+that\s+(?:\S+\s+){1,3}?"
     r"(?:was|were|had|(?:has|have)\s+been)\b"
-    r"|\bfile\s+(?:this|it|these|them)\b",
+    r"|\bfile\s+(?:this|it|these|them)\b"
+)
+_PAPERWORK = re.compile(_PAPERWORK_PATTERN, re.IGNORECASE)
+_NOT_CARE = re.compile(
+    r"\bfollowing\s+(?:the\s+|a\s+|his\s+|her\s+|their\s+|this\s+)?(?:recent\s+)?reviews?\s*,"
+    r"|" + _PAPERWORK_PATTERN,
     re.IGNORECASE,
 )
+# A sentence whose own instruction is paperwork ("Staff should document that ..."), as opposed to
+# care that also mentions recording ("Staff should help Cathy eat and document that ...").
+_PAPERWORK_LEAD = re.compile(
+    r"^\s*(?:staff\s+(?:should|must|will|to)\s+)?(?:document|note|record|log|file)\b",
+    re.IGNORECASE,
+)
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 # A reason clause in an action ("... because she was coughing", "due to ..."). The action is still
-# care, so it is kept - the agent is only asked to take the reason out. "Medication due to be
-# given" is a time, not a reason.
-_REASON = re.compile(
-    r"\bbecause\b|\bdue\s+to\b(?!\s+be\b)|\bas\s+a\s+result\s+of\b|\bowing\s+to\b",
-    re.IGNORECASE,
+# care, so it is kept and only the reason is taken out. "Medication due to be given" is a time,
+# not a reason.
+_REASON_WORDS = r"\b(?:because|due\s+to(?!\s+be\b)|as\s+a\s+result\s+of|owing\s+to)\b"
+_REASON = re.compile(_REASON_WORDS, re.IGNORECASE)
+# The reason clause runs to the next comma, semicolon or full stop - a dot or comma inside a
+# number ("46.8 kg", "1,500 ml") is part of it.
+_REASON_CLAUSE = re.compile(
+    r"(,\s*)?" + _REASON_WORDS + r"(?:[^,.;]|[.,](?=\d))*(,)?", re.IGNORECASE
 )
+
+
+def paperwork_only(text: str) -> bool:
+    """Every sentence is an instruction to write down or file something that happened ("Staff
+    should document that she was weighed and file this with the chart") - no care in it."""
+    sentences = [s for s in _SENTENCE_END.split(text.strip()) if s.strip()]
+    return bool(sentences) and all(
+        _PAPERWORK_LEAD.search(s) and _PAPERWORK.search(s) for s in sentences
+    )
+
+
+def strip_reason(text: str) -> str:
+    """The action without its reason clause: "offer the diet as advised because she was
+    coughing, and sit her upright" -> "offer the diet as advised, and sit her upright"."""
+
+    def cut(m: re.Match[str]) -> str:
+        return "," if m.group(2) and not m.group(1) else " "
+
+    out = _REASON_CLAUSE.sub(cut, text)
+    out = re.sub(r"\s+([,.;])", r"\1", " ".join(out.split()))
+    out = re.sub(r",(?=[.;])", "", out).strip(" ,")
+    return out[:1].upper() + out[1:] if out else text
 # OPENCARE-79: equipment as a status ("Staff should arrange a sensor mat as requested"), not how it
 # is used. Only when the action itself is arranging or ordering - "help Cathy get dressed as
 # agreed" is care.
@@ -205,6 +241,8 @@ class ValidationResult:
     patterns: list[Pattern] = field(default_factory=list)
     # Every problem in plain words, for the care plan agent to fix on revision.
     problems: list[str] = field(default_factory=list)
+    # Earlier care plan lines that are only paperwork: not carried into the plan - staff are told.
+    not_carried: list[str] = field(default_factory=list)
 
     @property
     def problem_score(self) -> int:
@@ -434,10 +472,17 @@ def validate_draft(
 
     # --- what must be covered ---
     required: set[str] = set(risk_ids)
+    not_carried: list[str] = []
     for source in evidence:
         if source.source_type == SourceType.PREVIOUS_CARE_PLAN and source.id.startswith("P"):
-            if source.id not in superseded:
-                required.add(source.id)
+            if source.id in superseded:
+                continue
+            if paperwork_only(source.text):
+                # Paperwork is not care (OPENCARE-78): not carried forward word for word.
+                if source.text not in not_carried:
+                    not_carried.append(source.text)
+                continue
+            required.add(source.id)
         elif source.is_note and _required_note(source, note_kinds.get(source.id)):
             required.add(source.id)
 
@@ -507,11 +552,13 @@ def validate_draft(
             continue
 
         if _REASON.search(text):
-            # Kept: dropping it could lose the care (e.g. a texture-modified diet).
+            # Kept: dropping it could lose the care (e.g. a texture-modified diet). The reason is
+            # taken out here, and the agent is told so it writes it that way.
             problems.append(
                 f"Action \"{text[:80]}\" explains why. Keep the care and take the reason out; "
                 "the reason stays in the cited evidence."
             )
+            text = strip_reason(text)
 
         sources = [by_id[i].text for i in ids] + [by_id[i].label for i in ids] + context_sources
         warnings = detail_warnings(text, sources)
@@ -583,8 +630,23 @@ def validate_draft(
     # --- 2. completeness: nothing missed, nothing skipped ---
     covered = {i for card in cards for i in card.evidence_ids}
     backfilled = 0
+    # The same line from more than one earlier care plan is shown once, citing each of them.
+    # Only earlier plan lines: other records with the same words ("Yes" to two questions) are
+    # different needs.
+    shown: dict[str, ActionCard] = {}
+
+    def plan_line(source: EvidenceItem) -> str | None:
+        if source.source_type != SourceType.PREVIOUS_CARE_PLAN:
+            return None
+        return " ".join(source.text.casefold().split())
+
     for source in evidence:  # evidence order keeps backfilled cards in a sensible order
         if source.id not in required or source.id in covered:
+            continue
+        line = plan_line(source)
+        same = shown.get(line) if line else None
+        if same is not None:
+            same.evidence_ids.append(source.id)
             continue
         if source.id in carried:
             # The model judged it states no care it could write without
@@ -600,6 +662,8 @@ def validate_draft(
                     verification="source_text",
                 )
             )
+            if line:
+                shown[line] = cards[-1]
             continue
         backfilled += 1
         problems.append(
@@ -620,6 +684,8 @@ def validate_draft(
                 verification="source_text",
             )
         )
+        if line:
+            shown[line] = cards[-1]
 
     # Needs a reader agent found in records the care plan agent didn't start
     # with: an action must cite one of each record's ids (the same record on
@@ -659,4 +725,5 @@ def validate_draft(
         missing_detail_count=missing_count,
         patterns=validate_patterns(draft.patterns, evidence, resident_name=resident_name),
         problems=problems,
+        not_carried=not_carried,
     )

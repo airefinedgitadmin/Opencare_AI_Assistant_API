@@ -169,7 +169,9 @@ async def start_session(request: StartSessionRequest) -> SessionView:
         screened=outcome.screened,
         omitted=outcome.omitted,
         notices=_notices(request, evidence, drafted=True, ignored=len(dropped))
-        + [coverage_notice(evidence, outcome.screened, outcome.omitted)],
+        + [coverage_notice(evidence, outcome.screened, outcome.omitted)]
+        + [f"Not carried forward from an earlier care plan (paperwork, not care): \"{text}\""
+           for text in result.not_carried],
         risks=result.risks,
         patterns=outcome.patterns,
         not_used=result.not_used,
