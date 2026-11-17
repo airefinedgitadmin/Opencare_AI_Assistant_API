@@ -66,6 +66,22 @@ guessing, put its id in carry_over instead - staff see it exactly as written.
 - If items need the same or a similar action, combine them into ONE action \
 that cites all of them - and keep every detail of each item (e.g. "upper \
 dentures", "after meals"). Combining must never drop information.
+- STAY IN THE PATHWAY. Every action is about the pathway named after \
+"Pathway:". Content that belongs to another pathway (e.g. a dentist \
+appointment in a MUST plan) is used ONLY where it directly affects this \
+pathway, and is then worded for this pathway (e.g. "Staff should check \
+Cathy's denture is in and comfortable before meals").
+- Each action is ONE thing staff do, stated clearly, with how often or when \
+if the evidence gives it ("record every drink on the Fluid chart", not "keep \
+the charts that have been started"; "weigh her weekly" only if the evidence \
+says weekly).
+- Where the assessment records a score or risk level (e.g. "MUST score 1 - \
+Medium risk"), the actions must respond to it, using the score and level in \
+the evidence's own words.
+- Where a chart linked to this pathway (V or T, not "supporting") shows \
+amounts eaten or drunk, readings or a target, write the action that responds \
+to it and cite those V/T items - e.g. a Fluid chart showing intake below its \
+recorded target needs a fluid action that cites it.
 - V items are readings staff recorded on a chart; T items summarise a chart. \
 Quote their figures exactly as written: never calculate a total, average or \
 difference, and never turn a reading into a diagnosis or a risk the evidence \
@@ -127,14 +143,61 @@ describes the result for the resident (e.g. "Cathy will ...").
 
 OUTCOME_SYSTEM_PROMPT = """\
 You write the intended OUTCOME for care plan actions that staff in a UK care \
-home have added to a resident's plan.
+home have added to a resident's plan, for the pathway named after "Pathway:".
 
-For each action (ref) write one sentence describing the result for the \
-resident, e.g. "Cathy will ...". Use only facts in that action's quotes - the \
-outcome is the goal of the action, not new information. Never add a \
-frequency, time, amount, equipment, person or diagnosis. Cite the ids of the \
-quotes it relies on. Write exactly one outcome per ref given. Plain, \
-person-centred UK English.
+For each action (ref) write ONE outcome. Every outcome must:
+1. Be a RESULT for the resident, not a staff task: "Cathy drinks the daily \
+amount her Fluid chart sets", never "Cathy will be offered drinks".
+2. Be checkable at the next review: a number, a frequency, a yes/no or a clear \
+change (e.g. "no further falls", "redness resolved").
+3. Follow from its action and the risk or need in its quotes.
+4. Use ONLY targets recorded in its quotes (assessment, chart target, SLT, GP, \
+dietitian or nurse advice). If no target is recorded, use general wording \
+("Cathy's weight stays stable or goes up by the next review") - never invent a \
+number, frequency, time, amount, equipment, person or diagnosis.
+5. Stay in the pathway: nothing from another pathway, no placeholder text, no \
+repeat of another outcome.
+6. Be one plain-English sentence using the resident's name given after \
+"Resident:". No diagnosis, medicine name or dose unless it is in the quotes.
+7. Cite the ids of the quotes it relies on.
+
+WHAT A GOOD OUTCOME MEASURES, by pathway (a pattern - the facts and targets \
+still come only from the quotes):
+- MUST: weight trend, share of each meal eaten, fluid against target, MUST \
+score at rescreen.
+- Diet and Fluid Notification: the right diet and fluid type every time; \
+intake against target.
+- Choking Risk: eats and drinks only in the advised IDDSI textures; no \
+coughing, choking or chest infection.
+- Falls: number of falls by review; safe use of the walking aid; dizziness on \
+standing reduced; safe toileting at night.
+- Oral Health: mouth clean and moist; no pain; denture worn and fits; dentist \
+seen.
+- Waterlow: skin intact; Waterlow score the same or lower; no new pressure \
+damage.
+- Skin Integrity: skin intact; redness or dryness resolved; no new skin tears.
+- Wound Care: wound size reducing; no signs of infection; healed by the review \
+date where recorded.
+- Bladder and Bowel: dry and comfortable; bowels open as often as the records \
+say; no UTI; uses the toilet with support.
+- Stoma Care: stoma and the skin around it healthy; no leaks; bag changed as \
+planned.
+- Stress and Distress: fewer distressed episodes; settles with the agreed \
+approach; takes part in chosen activities.
+- Assessment of Dependency: takes part in daily care as independently as \
+possible; needs met at the assessed level.
+- PRN Medication: PRN given only when the recorded criteria are met; effect \
+recorded; no unmet pain or distress.
+- End of Life Wishes: wishes known, recorded and followed; comfortable and \
+pain-free; family involved as wished.
+- Bedroom Fire Risk Assessment (BFRA): room kept safe; evacuation plan known; \
+risks removed.
+- Admission Care Plan: settles into the home; preferences known and followed; \
+key assessments completed.
+- Any other pathway: comfort, safety, independence, wellbeing or a completed \
+referral, linked to the flagged risks.
+
+Write exactly one outcome per ref given.
 """
 
 VERIFY_SYSTEM_PROMPT = """\
@@ -152,7 +215,10 @@ NOT expected to be in the quotes. It is fine when it responds to a need or \
 risk the quotes show and stays proportionate: e.g. quote "Dentures: Yes" -> \
 "Staff should offer Cathy assistance or prompting with her dentures" is \
 supported. An OUTCOME is the intended result of its action, stated as a goal \
-- fine when it follows from the action and adds no new fact.
+- fine when it follows from the action and adds no new fact. A measurable goal \
+is fine when its target is in the quotes (e.g. a fluid target of 1500 ml) or \
+it uses general wording ("weight stays stable"); a target no quote gives is \
+overstated.
 
 Verdicts:
   supported   - every fact is in the quotes, and any care response answers a \
@@ -423,6 +489,7 @@ def build_outcome_messages(
     actions: list[tuple[str, str, list[EvidenceItem]]],
     examples: list[StyleExample] | None = None,
     feedback: dict[str, str] | None = None,
+    pathway: str | None = None,
 ) -> list[BaseMessage]:
     """actions: (ref, action text, the quotes behind it). feedback: ref -> a
     rejected earlier outcome and why, so the rewrite avoids it."""
@@ -437,7 +504,8 @@ def build_outcome_messages(
     return [
         SystemMessage(content=OUTCOME_SYSTEM_PROMPT),
         HumanMessage(
-            content=f"Resident: {resident_name or 'the resident'}\n\n" + "\n\n".join(blocks)
+            content=f"Resident: {resident_name or 'the resident'}\n"
+            f"Pathway: {pathway or 'Not specified'}\n\n" + "\n\n".join(blocks)
             + format_style_examples(examples or [])
         ),
     ]

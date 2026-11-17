@@ -97,7 +97,8 @@ def fake_models(monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:  # type: ig
 
     async def _outcomes(*, resident_name: str | None,
                         actions: list[tuple[str, str, list[EvidenceItem]]],
-                        examples: object = None, feedback: object = None) -> OutcomesOut:
+                        examples: object = None, feedback: object = None,
+                        pathway: str | None = None) -> OutcomesOut:
         calls["outcomes"].append([(ref, [q.id for q in quotes]) for ref, _, quotes in actions])
         calls["outcome_feedback"].append(feedback)
         # Staff may have edited the action before adding it - the outcome is
@@ -674,24 +675,27 @@ BFRA_QUESTIONS = [{"question": "Does the resident smoke?", "answer": None},
 def test_every_record_is_used_and_unanswered_questions_are_listed(
     base_env: None, fake_models: dict[str, list]  # type: ignore[type-arg]
 ) -> None:
-    # The BFRA case: form not answered; previous plan and notes say "test".
+    # The BFRA case: form not answered; previous plan and one note say "test", one note is real.
     payload = {
         "assessmentTemplateUserId": 66093, "pathway": "Bedroom Fire Risk Assessment (BFRA)",
         "residentName": "Cathy", "assessment": {"answers": BFRA_QUESTIONS},
         "previousCarePlans": [{"carePlanId": 1, "action": "<p>test</p>", "outcome": "test"}],
-        "notes": [{"noteType": "nursing", "pathwayLinked": True, "note": "test"}],
+        "notes": [{"noteType": "nursing", "pathwayLinked": True, "note": "test"},
+                  {"noteType": "nursing", "pathwayLinked": True,
+                   "note": "Cathy smokes in the garden."}],
     }
     with TestClient(create_app()) as client:
         session = _start(client, payload)
 
-    # "test" records are records like any other: the agent gets all of them.
-    assert fake_models["draft"][0]["evidence"] == ["P1", "O1", "N1"]
+    # OPENCARE-80: placeholder text ("test") is not a record - only the real note reaches the agent.
+    assert fake_models["draft"][0]["evidence"] == ["N1"]
     assert session["notices"] == [
         "Bedroom Fire Risk Assessment (BFRA) has no answers yet - complete it first: "
         "suggestions are built from its answers.",
+        '3 entries with placeholder text (e.g. "test") left out.',
         "Not answered in Bedroom Fire Risk Assessment (BFRA): Does the resident smoke?; "
         "Are there electrical heaters in the room?.",
-        "The AI read all 3 records.",
+        "The AI read the one record.",
     ]
     # Everything fitted the pack, so no reader agent was needed.
     assert fake_models["read"] == []

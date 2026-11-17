@@ -39,11 +39,13 @@ async def write_outcomes(
     actions: list[tuple[str, str, list[EvidenceItem]]],
     examples: list[StyleExample] | None = None,
     feedback: dict[str, str] | None = None,
+    pathway: str | None = None,
 ) -> OutcomesOut:
     """Care plan agent's outcome step: one outcome per added action. `feedback`
     = ref -> the rejected outcome and the verifier's reason, for a rewrite."""
     messages = build_outcome_messages(
-        resident_name=resident_name, actions=actions, examples=examples, feedback=feedback
+        resident_name=resident_name, actions=actions, examples=examples, feedback=feedback,
+        pathway=pathway,
     )
     return await invoke_structured("primary", OutcomesOut, messages)
 
