@@ -89,13 +89,91 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 # A reason clause in an action ("... because she was coughing", "due to ..."). The action is still
 # care, so it is kept and only the reason is taken out. "Medication due to be given" is a time,
 # not a reason.
-_REASON_WORDS = r"\b(?:because|due\s+to(?!\s+be\b)|as\s+a\s+result\s+of|owing\s+to)\b"
+# OPENCARE-98 adds the reasons the Falls retest found - "... at night as she is no longer safe to
+# walk alone", "... noting she has needed help twice", "... since she fell", "given that ...".
+# Only those forms: "noting any redness" is a check, "as far as she is able" / "as soon as she
+# wakes" / "as she prefers" are care, and "since admission" is a time.
+_PERSON = r"(?:she|he|they)"
+_REASON_WORDS = (
+    r"\b(?:because|due\s+to(?!\s+be\b)|as\s+a\s+result\s+of|owing\s+to"
+    r"|(?<!far\s)(?<!soon\s)(?<!much\s)(?<!long\s)(?<!well\s)(?<!often\s)(?<!such\s)"
+    r"as\s+" + _PERSON + r"\s+(?:is|was|has|had|no\s+longer|cannot|can't|does\s+not|doesn't|"
+    r"did\s+not|didn't|keeps|tends)"
+    r"|noting\s+(?:that\s+)?" + _PERSON + r"|since\s+" + _PERSON + r"|given\s+that)\b"
+)
 _REASON = re.compile(_REASON_WORDS, re.IGNORECASE)
 # The reason clause runs to the next comma, semicolon or full stop - a dot or comma inside a
 # number ("46.8 kg", "1,500 ml") is part of it.
 _REASON_CLAUSE = re.compile(
     r"(,\s*)?" + _REASON_WORDS + r"(?:[^,.;]|[.,](?=\d))*(,)?", re.IGNORECASE
 )
+
+
+# OPENCARE-98: an action that waits for the problem ("If Agnes says she feels light-headed when
+# standing, staff should offer support") instead of preventing it.
+_REACTIVE = re.compile(
+    r"\b(?:[Ii]f|[Ww]hen)\s+(?:she|he|they|[A-Z][a-z]+)\s+(?:says|said|feels|reports|complains"
+    r"|tells|becomes|is\s+found)\b",
+)
+
+# Two actions are the same need when this share of their content words is shared (ticket: more
+# than 60% token overlap).
+SAME_NEED_OVERLAP = 0.6
+
+
+def word_overlap(a: str, b: str) -> float:
+    """Shared content words over all content words of the two texts (0..1). The resident's name
+    and "staff should" style words don't count."""
+    first, second = content_stems([a]), content_stems([b])
+    union = first | second
+    return len(first & second) / len(union) if union else 0.0
+
+
+def overlapping_actions(texts: list[str]) -> list[tuple[int, int]]:
+    """Index pairs of texts that say mostly the same thing."""
+    return [
+        (i, j)
+        for i in range(len(texts))
+        for j in range(i + 1, len(texts))
+        if word_overlap(texts[i], texts[j]) > SAME_NEED_OVERLAP
+    ]
+
+
+# OPENCARE-98: an outcome where a record stands in for the result ("Agnes is recorded as using her
+# walker") is not a result for the resident. Only "recorded AS ...": "each PRN dose is recorded
+# with its effect" and "preferences are recorded and followed" are results the rules ask for.
+_RECORDING_OUTCOME = re.compile(
+    r"\b(?:is|are|was|were|be|being|been)\s+(?:recorded|documented|noted|logged|charted)\s+as\b",
+    re.IGNORECASE,
+)
+# The "no <thing>" goal of an outcome ("has no further falls", "no new skin tears"), so the same
+# goal is set by one outcome only.
+# Not "no longer", "no more than", "no less than", "no later than" - those aren't goals.
+_NO_GOAL = re.compile(
+    r"\bno\s+(?!longer\b|more\s+than\b|less\b|later\b|sooner\b|fewer\b|one\b|other\b)"
+    r"(?:further\s+|more\s+|new\s+)?([a-z]+)",
+    re.IGNORECASE,
+)
+
+
+def describes_recording(text: str) -> bool:
+    """The outcome describes a record being kept, not a result for the resident."""
+    return bool(_RECORDING_OUTCOME.search(text))
+
+
+def no_goals(text: str) -> set[str]:
+    """The things an outcome says there will be none of ("falls" in "has no further falls")."""
+    return {_stem(m.group(1).casefold()) for m in _NO_GOAL.finditer(text)}
+
+
+def repeats_outcome(text: str, kept: list[str]) -> bool:
+    """Says the same as an outcome already kept: more than 60% of its words, or the same
+    "no <thing>" goal ("no falls" twice)."""
+    goals = no_goals(text)
+    return any(
+        word_overlap(text, other) > SAME_NEED_OVERLAP or (goals and goals & no_goals(other))
+        for other in kept
+    )
 
 
 def paperwork_only(text: str) -> bool:
@@ -434,6 +512,14 @@ def validate_draft(
         elif risk.evidence_id not in risk_seen:
             bad_ref("Risk", risk.evidence_id)
         risk_seen.add(risk.evidence_id)
+    # OPENCARE-98: an answer the template flags as a risk is a risk whether or not the model listed
+    # it - so it must be covered by an action, or it is shown as not covered.
+    for item in evidence:
+        if (item.risk_flagged and item.source_type == SourceType.ASSESSMENT
+                and item.id.startswith("A") and item.id not in {r.evidence_id for r in risks}):
+            risks.append(
+                RiskFlag(evidence_id=item.id, reason=f"Flagged in the assessment: {item.label}")
+            )
     risk_ids = {r.evidence_id for r in risks}
 
     # --- note classification ---
@@ -560,6 +646,14 @@ def validate_draft(
             )
             text = strip_reason(text)
 
+        if _REACTIVE.search(text):
+            # OPENCARE-98: "If Agnes says she feels light-headed, staff should..." waits for the
+            # problem. Kept (it is still care), and the agent is asked for the preventive step.
+            problems.append(
+                f"Action \"{text[:80]}\" waits for the problem to happen. Write what staff do "
+                "routinely to prevent it, using only what the evidence gives."
+            )
+
         sources = [by_id[i].text for i in ids] + [by_id[i].label for i in ids] + context_sources
         warnings = detail_warnings(text, sources)
         unsupported_count += len(warnings)
@@ -625,6 +719,14 @@ def validate_draft(
                 outcome=outcome,
                 draft_index=index,
             )
+        )
+
+    # OPENCARE-98: one action per need - two actions saying mostly the same thing ("take her to
+    # the bathroom at night" twice) are the same need written twice.
+    for first, second in overlapping_actions([card.text for card in cards]):
+        problems.append(
+            f"Actions \"{cards[first].text[:60]}\" and \"{cards[second].text[:60]}\" cover the "
+            "same need. Write one action for it, citing the evidence of both."
         )
 
     # --- 2. completeness: nothing missed, nothing skipped ---

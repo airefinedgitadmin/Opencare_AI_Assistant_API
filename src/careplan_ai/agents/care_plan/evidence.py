@@ -15,7 +15,7 @@ and the code checks can tell sources apart at a glance:
     H1..  related care plan sentences (this pathway's archived plans, other
           pathways' plans) - history: context and patterns, never required
     V1..  observation chart entries (fluid, food, TPR, falls diary, ...) - one
-          item per entry, its fields as "Field: value; ..."; supporting only
+          item per entry: its date first (dd/mm/yyyy), then "Field: value · ..."; supporting only
     T1..  one summary line per chart, computed here from its entries (count,
           days, each number's range and latest value) - so a long chart is
           always represented exactly, whatever is read of its entries
@@ -26,7 +26,9 @@ context.py, and anything it can't read is reported, not dropped.
 """
 
 import re
+from datetime import datetime
 from html.parser import HTMLParser
+from zoneinfo import ZoneInfo
 
 from careplan_ai.agents.care_plan.schemas import EvidenceItem, SourceType
 from careplan_ai.api.schemas.agent import (
@@ -181,6 +183,7 @@ def build_evidence(
                     label=answer.question.strip(),
                     date=request.assessment.completed_date,
                     text=answer.answer.strip(),
+                    risk_flagged=answer.risk_flagged,
                 )
             )
 
@@ -372,8 +375,45 @@ def chart_summaries(entries: list[ObservationIn]) -> list[EvidenceItem]:
     return summaries
 
 
+# A date or date-time as SurveyJS saves it: "2026-11-09", "2026-11-09T21:40", "2026-11-09 21:40:00".
+_ISO_DATE = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})"
+    r"(?:[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?)?(?:Z|[+-]\d{2}:?\d{2})?"
+)
+
+
+_UK = ZoneInfo("Europe/London")
+# A field that IS the entry's own date and time ("Date & Time of Fall", "Date & Time") leads the
+# entry without its question; any other date ("Date of last GP review") keeps its name.
+_ENTRY_WHEN = re.compile(r"\b(?:date|time)\b", re.IGNORECASE)
+_OTHER_DATE = re.compile(
+    r"\b(?:last|next|review|due|previous|birth|admission|appointment|given|started|stopped)\b",
+    re.IGNORECASE,
+)
+
+
+def readable_date(value: str) -> str:
+    """OPENCARE-98: "2026-11-09T21:40" -> "09/11/2026 21:40". A time saved without a zone is shown
+    as written; one with a zone ("...Z") in UK time. Anything else unchanged."""
+    text = value.strip()
+    m = _ISO_DATE.fullmatch(text)
+    if not m:
+        return value
+    if m.group(4) and (text.endswith(("Z", "z")) or re.search(r"[+-]\d{2}:?\d{2}$", text)):
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00").replace("z", "+00:00"))
+            return moment.astimezone(_UK).strftime("%d/%m/%Y %H:%M")
+        except ValueError:
+            pass
+    day = f"{m.group(3)}/{m.group(2)}/{m.group(1)}"
+    return f"{day} {m.group(4)}:{m.group(5)}" if m.group(4) else day
+
+
 def observation_text(entry: ObservationIn, dropped: list[str] | None = None) -> str:
-    """'Field: value; Field: value' for the fields that were filled in."""
+    """The fields that were filled in, as staff read them (OPENCARE-98): the entry's date and time
+    first, without its question, then "Field: value" - "09/11/2026 21:40 · Location of Fall:
+    Bathroom · What Happened?: Slipped on the bathroom floor". ISO dates are shown dd/mm/yyyy."""
+    when: str | None = None
     parts = []
     for v in entry.values:
         value = _WHITESPACE.sub(" ", v.value or "").strip()
@@ -382,6 +422,12 @@ def observation_text(entry: ObservationIn, dropped: list[str] | None = None) -> 
             if dropped is not None:
                 dropped.append(value)
             continue
-        if value:
-            parts.append(f"{field}: {value}" if field else value)
-    return "; ".join(parts)
+        if not value:
+            continue
+        shown = readable_date(value)
+        if (when is None and shown != value and _ENTRY_WHEN.search(field)
+                and not _OTHER_DATE.search(field)):
+            when = shown  # the entry's own date and time leads, its question adds nothing
+            continue
+        parts.append(f"{field}: {shown}" if field else shown)
+    return " · ".join(([when] if when else []) + parts)

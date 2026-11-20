@@ -22,6 +22,9 @@ class AssessmentAnswerIn(CamelModel):
     question: str
     # The answer as staff saw it - choice TEXT, not the stored choice value.
     answer: str | None = None
+    # OPENCARE-98: the template flags this answer as a risk (a "Yes", or an option scored above 0).
+    # Every flagged answer must be covered by an action, or shown as not covered.
+    risk_flagged: bool = False
 
 
 class AssessmentEvidenceIn(CamelModel):

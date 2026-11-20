@@ -58,7 +58,14 @@ class ActionOut(BaseModel):
 
 
 class OutcomeOut(BaseModel):
-    ref: str = Field(description="The action's ref exactly as given, e.g. 'S1'.")
+    ref: str = Field(
+        description="Ref of the action this outcome measures most directly, exactly as "
+        "given, e.g. 'S1'. No two outcomes share a ref."
+    )
+    also_measures: list[str] = Field(
+        default_factory=list,
+        description="Refs of the other actions this outcome also measures or depends on.",
+    )
     text: str = Field(description="The intended outcome for the resident, one sentence.")
     evidence_ids: list[str] = Field(description="Ids of the quotes the outcome relies on.")
 
@@ -204,6 +211,8 @@ class EvidenceItem(CamelModel):
     # Observations only: a SUPPORTING chart for this pathway (care team rules)
     # - context that can back an action alongside other evidence, never alone.
     supporting: bool = False
+    # Assessment answers only (OPENCARE-98): the template flags this answer as a risk.
+    risk_flagged: bool = False
     # The record changed or is no longer in the backend's evidence since the AI
     # read it (agent memory keeps references, not text - agents/care_plan/stored.py).
     changed: bool = False

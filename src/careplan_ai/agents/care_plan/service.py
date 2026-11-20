@@ -38,7 +38,9 @@ from careplan_ai.agents.care_plan.validation import (
     UNSUPPORTED_NUMBER_WARNING,
     borrowed_terms,
     confidence_for,
+    describes_recording,
     detail_warnings,
+    repeats_outcome,
     stems,
 )
 from careplan_ai.agents.care_plan.verify import (
@@ -340,47 +342,88 @@ async def write_outcomes(
     )
     example_stems = stems([e.text for e in session.style_examples])
 
+    card_by_id = {c.id: c for c in cards}
+    # Outcome (keyed by the action it sits under) -> every action it measures.
+    links: dict[str, list[str]] = {}
+    # OPENCARE-98: outcomes already offered or kept on other actions of this plan - a later call
+    # (for actions added since) must not repeat them ("no further falls" twice).
+    earlier = tuple(
+        c.outcome.text for c in session.cards
+        if c.id not in card_by_id and c.outcome is not None and c.outcome.text
+        and c.outcome.status in (CardStatus.PENDING, CardStatus.ADDED)
+    )
+    # Only the flagged risks the actions being written answer: a risk no added action covers
+    # would otherwise be forced into an outcome under an unrelated action.
+    answered = {i for c in cards for i in c.evidence_ids}
+    risks_for_these = [r for r in session.risks if r.evidence_id in answered]
+
     async def attempt(
-        todo: list[ActionCard], feedback: dict[str, str]
+        todo: list[ActionCard], feedback: dict[str, str], taken: set[str],
+        taken_texts: tuple[str, ...] = (),
     ) -> tuple[dict[str, Suggestion], dict[str, VerdictOut] | None]:
-        """Write -> code checks -> verifier, for these cards."""
+        """Write -> code checks -> verifier, for these cards. One outcome per need, not per
+        action: each sits under the action it measures most directly (`ref`), and an action
+        that only supports another outcome gets none. `taken`: outcome texts already kept."""
         out = await llm.write_outcomes(
             resident_name=session.resident_name,
             actions=[(c.id, c.text, quotes[c.id]) for c in todo],
             examples=session.style_examples,
             feedback=feedback,
             pathway=session.pathway,
+            risks=risks_for_these,
         )
-        written = {o.ref.strip(): o for o in out.outcomes}
+        in_todo = [c.id for c in todo]
+        # On a rewrite only the rejected outcomes are replaced; the rest is context.
+        leads = set(feedback) or set(in_todo)
         drafts: dict[str, Suggestion] = {}
-        for card in todo:
-            o = written.get(card.id)
-            text = " ".join(o.text.split()) if o else ""
-            allowed = {e.id for e in quotes[card.id]}
-            ids = [i for i in dict.fromkeys(o.evidence_ids) if i in allowed] if o else []
-            ids = ids or card.evidence_ids
+        seen = set(taken)
+        # OPENCARE-98: outcomes already kept, to stop near-repeats and a goal set twice.
+        kept_texts = list(taken_texts)
+        for o in out.outcomes:
+            refs = [r for r in dict.fromkeys(r.strip() for r in [o.ref, *o.also_measures])
+                    if r in in_todo]
+            lead = next((r for r in refs if r in leads and r not in drafts), None)
+            text = " ".join(o.text.split())
+            if lead is None or not text or _normalise(text) in seen:
+                continue  # no action of this plan to sit under, or said already
+            if describes_recording(text) or repeats_outcome(text, kept_texts):
+                continue  # a record, not a result; or the same result again
+            measured = [card_by_id[r] for r in refs]
+            allowed = {e.id for c in measured for e in quotes[c.id]}
+            ids = [i for i in dict.fromkeys(o.evidence_ids) if i in allowed]
+            ids = ids or card_by_id[lead].evidence_ids
             sources = [by_id[i].text for i in allowed] + [by_id[i].label for i in allowed]
-            sources += [card.text] + context
-            if not text or borrowed_terms(text, source_stems=resident_stems,
-                                          example_stems=example_stems):
+            sources += [c.text for c in measured] + context
+            if borrowed_terms(text, source_stems=resident_stems, example_stems=example_stems):
                 continue
             warnings = detail_warnings(text, sources)
-            drafts[card.id] = Suggestion(text=text, original_text=text, evidence_ids=ids,
-                                         warnings=warnings,
-                                         confidence=confidence_for(ids, by_id, warnings))
+            seen.add(_normalise(text))
+            kept_texts.append(text)
+            links[lead] = refs
+            drafts[lead] = Suggestion(text=text, original_text=text, evidence_ids=ids,
+                                      warnings=warnings,
+                                      confidence=confidence_for(ids, by_id, warnings))
         if not drafts or not get_settings().agent_verify:
             return drafts, None
         try:
             verified = await llm.verify_statements(
                 resident_name=session.resident_name,
-                statements=[(f"{cid}.outcome", s.text, quotes[cid]) for cid, s in drafts.items()],
+                statements=[(f"{cid}.outcome", s.text, linked_quotes(cid))
+                            for cid, s in drafts.items()],
             )
         except Exception as exc:  # noqa: BLE001 - mark not verified rather than fail
             logger.warning("care_plan_outcome_verifier_failed", error=type(exc).__name__)
             return drafts, None
         return drafts, {v.ref.strip(): v for v in verified.verdicts}
 
-    drafts, verdicts = await attempt(cards, {})
+    def linked_quotes(lead: str) -> list[EvidenceItem]:
+        """The quotes of every action the outcome measures (no repeats)."""
+        merged: dict[str, EvidenceItem] = {}
+        for cid in links.get(lead, [lead]):
+            merged.update((e.id, e) for e in quotes[cid])
+        return list(merged.values())
+
+    drafts, verdicts = await attempt(cards, {}, {_normalise(t) for t in earlier}, earlier)
     # An outcome the verifier rejects is rewritten once, with its reason.
     retry = {
         c.id: f"{drafts[c.id].text} - {verdicts[f'{c.id}.outcome'].reason}"
@@ -389,7 +432,12 @@ async def write_outcomes(
         and verdicts[f"{c.id}.outcome"].verdict in REJECT
     }
     if retry:
-        again, again_verdicts = await attempt([c for c in cards if c.id in retry], retry)
+        involved = {cid for lead in retry for cid in links.get(lead, [lead])}
+        kept_texts = earlier + tuple(s.text for cid, s in drafts.items() if cid not in retry)
+        kept = {_normalise(t) for t in kept_texts}
+        again, again_verdicts = await attempt(
+            [c for c in cards if c.id in involved], retry, kept, kept_texts
+        )
         drafts.update(again)
         if verdicts is not None:
             if again_verdicts is None:  # rewrites couldn't be verified

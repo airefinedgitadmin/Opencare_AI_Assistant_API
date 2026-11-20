@@ -17,6 +17,7 @@ from careplan_ai.agents.care_plan.schemas import (
     NoteClassOut,
     NotUsedOut,
     PatternOut,
+    RiskFlag,
     RiskFlagOut,
     SourceType,
 )
@@ -64,12 +65,22 @@ amount or piece of equipment.
 ("follow the previous care plan", "as per the assessment", "the care plan \
 item"). If a P item states no care you can write as an action without \
 guessing, put its id in carry_over instead - staff see it exactly as written.
-- If items need the same or a similar action, combine them into ONE action \
+- ONE ACTION PER NEED. If several items show the SAME need, write ONE action \
 that cites all of them - and keep every detail of each item (e.g. "upper \
-dentures", "after meals"). Combining must never drop information.
+dentures", "after meals"). Combining must never drop information. Never put \
+different needs in one action (walker, sensor mat and toileting are three \
+actions), and never write two actions for the same need (taking her to the \
+bathroom at night is one action, however many items mention it).
+- PREVENT, DON'T WAIT. Write what staff do routinely to stop a risk happening \
+("walk with Cathy to the toilet before bed and during the night"), not only \
+what to do once it has happened ("if Cathy says she feels light-headed, offer \
+support"). Use only the steps and details the evidence gives.
 - An action says only WHAT staff do. It never explains why ("Following \
-review, he is no longer independent...", "... because she was coughing" - the \
-reason is in the cited evidence, which staff see under View). It is never \
+review, he is no longer independent...", "... because she was coughing", \
+"... as she is no longer safe to walk alone", "... noting she needed help \
+twice", "... since she fell" - the reason is in the cited evidence, which \
+staff see under View). Never use "as she / as he", "because", "since", \
+"noting" or "given that" in an action. It is never \
 paperwork about the records ("document that a dentist appointment has been \
 requested", "document that she was weighed and file it with the chart"): write \
 the care it leads to, or leave it out. Recording on a chart IS care when the \
@@ -107,7 +118,9 @@ for an action.
 TASKS
 1. risks: for each assessment answer (A) that shows a risk or a need for \
 support, give its id and a short reason using the answer's own words. Answers \
-showing no problem are not risks.
+showing no problem are not risks. Every answer marked [FLAGGED RISK] is a \
+risk: list it here and cover it with an action (e.g. a medicines answer \
+needs a medicines action, a footwear answer a footwear action).
 2. note_classes: classify EVERY note item (R, C, N, G, F - not V) as \
 new_requirement, update, status or not_relevant (to this pathway).
 3. not_used: a P item belongs here ONLY if a current (not "history") note item \
@@ -159,23 +172,41 @@ describes the result for the resident (e.g. "Cathy will ...").
 _MEASURES_HEADING = "WHAT A GOOD OUTCOME MEASURES"
 
 OUTCOME_SYSTEM_PROMPT = """\
-You write the intended OUTCOME for care plan actions that staff in a UK care \
-home have added to a resident's plan, for the pathway named after "Pathway:".
+You write the intended OUTCOMES of a UK care home resident's care plan: the \
+results the actions staff have added should achieve, for the pathway named \
+after "Pathway:".
 
-For each action (ref) write ONE outcome. Every outcome must:
+How many: one outcome for each need or flagged risk the actions answer - not \
+one per action, and no fixed number. Combine two needs into one outcome only \
+when they share the same result. An action that only supports another outcome \
+(recording on a chart, a referral if things get worse, a check before meals) \
+gets no outcome of its own: list it under the outcome it supports. So does an \
+action whose need is not one this pathway measures (see below).
+
+For each outcome give:
+- ref: the action it measures most directly. No two outcomes share a ref.
+- also_measures: the refs of the other actions it measures or depends on.
+- text and evidence_ids.
+
+Every outcome must:
 1. Be a RESULT for the resident, not a staff task: "Cathy drinks the daily \
-amount her Fluid chart sets", never "Cathy will be offered drinks".
+amount her Fluid chart sets", never "Cathy will be offered drinks". Never a \
+record standing in for the result: never "Cathy is recorded as drinking ...".
 2. Be checkable at the next review: a number, a frequency, a yes/no or a clear \
 change (e.g. "no further falls", "redness resolved").
-3. Follow from its action and the risk or need in its quotes.
+3. Link to the plan: follow from its actions and the need or risk in their \
+quotes. Every risk listed after "Flagged risks:" needs an outcome.
 4. Use ONLY targets recorded in its quotes (assessment, chart target, SLT, GP, \
 dietitian or nurse advice). If no target is recorded, use general wording \
 ("Cathy's weight stays stable or goes up by the next review") - never invent a \
 number, frequency, time, amount, equipment, person or diagnosis.
 5. Stay in the pathway: nothing from another pathway, no placeholder text, no \
-repeat of another outcome.
-6. Be one plain-English sentence using the resident's name given after \
-"Resident:". No diagnosis, medicine name or dose unless it is in the quotes.
+two outcomes saying the same thing. Set each goal ONCE: a "no further ..." \
+goal is in one outcome only, and every other outcome measures a different \
+result.
+6. Be one short plain-English sentence with one result (not "uses her frame \
+and has no falls"), using the resident's name given after "Resident:". No \
+diagnosis, medicine name or dose unless it is in the quotes.
 7. Cite the ids of the quotes it relies on.
 
 """ + _MEASURES_HEADING + """, by pathway (a pattern - the facts and targets \
@@ -214,7 +245,7 @@ key assessments completed.
 - Any other pathway: comfort, safety, independence, wellbeing or a completed \
 referral, linked to the flagged risks.
 
-Write exactly one outcome per ref given.
+Use only the refs given.
 """
 
 
@@ -320,7 +351,8 @@ def format_evidence_line(item: EvidenceItem) -> str:
     details = [item.date] if item.date else []
     if item.source_type == SourceType.ASSESSMENT:
         when = f" ({details[0]})" if details else ""
-        return f"[{item.id}] Assessment{when} - Q: {item.label} | A: {item.text}"
+        flag = " [FLAGGED RISK]" if item.risk_flagged else ""
+        return f"[{item.id}] Assessment{when}{flag} - Q: {item.label} | A: {item.text}"
     name = _source_name(item)
     on_record = item.is_note or item.is_observation or item.is_chart_summary
     if item.supporting:
@@ -531,10 +563,13 @@ def build_outcome_messages(
     examples: list[StyleExample] | None = None,
     feedback: dict[str, str] | None = None,
     pathway: str | None = None,
+    risks: list[RiskFlag] | None = None,
 ) -> list[BaseMessage]:
     """actions: (ref, action text, the quotes behind it). feedback: ref -> a
-    rejected earlier outcome and why, so the rewrite avoids it."""
+    rejected earlier outcome and why, so the rewrite avoids it. risks: the
+    assessment's flagged risks, each of which needs an outcome."""
     feedback = feedback or {}
+    flagged = "\n".join(f"- [{r.evidence_id}] {r.reason}" for r in risks or []) or "none"
     blocks = []
     for ref, text, quotes in actions:
         block = f"[{ref}] ACTION: {text}\nQUOTES:\n{format_evidence(quotes)}"
@@ -542,11 +577,15 @@ def build_outcome_messages(
             block += (f"\nREJECTED EARLIER OUTCOME (not supported by the quotes): "
                       f"{feedback[ref]}\nWrite one that says only what the quotes support.")
         blocks.append(block)
+    if feedback:
+        blocks.append("Write only the outcomes that replace the rejected ones, each with "
+                      "the ref it was rejected for; the other actions are there for context.")
     return [
         SystemMessage(content=OUTCOME_SYSTEM_PROMPT),
         HumanMessage(
             content=f"Resident: {resident_name or 'the resident'}\n"
-            f"Pathway: {pathway or 'Not specified'}\n\n" + "\n\n".join(blocks)
+            f"Pathway: {pathway or 'Not specified'}\n"
+            f"Flagged risks:\n{flagged}\n\n" + "\n\n".join(blocks)
             + format_style_examples(examples or [])
         ),
     ]

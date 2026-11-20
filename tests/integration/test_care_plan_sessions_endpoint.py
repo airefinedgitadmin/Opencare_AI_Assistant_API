@@ -98,7 +98,7 @@ def fake_models(monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:  # type: ig
     async def _outcomes(*, resident_name: str | None,
                         actions: list[tuple[str, str, list[EvidenceItem]]],
                         examples: object = None, feedback: object = None,
-                        pathway: str | None = None) -> OutcomesOut:
+                        pathway: str | None = None, risks: object = None) -> OutcomesOut:
         calls["outcomes"].append([(ref, [q.id for q in quotes]) for ref, _, quotes in actions])
         calls["outcome_feedback"].append(feedback)
         # Staff may have edited the action before adding it - the outcome is
@@ -195,6 +195,82 @@ def test_outcomes_are_written_only_for_added_actions_when_asked(
     assert s["cards"][1]["outcome"] is None  # dismissed action: never gets one
     assert s["nextOutcomeCardId"] == "S1" and s["outcomesToWrite"] == []
     assert len(fake_models["outcomes"]) == 1 and again["cards"] == s["cards"]
+
+
+def test_one_outcome_per_need_sits_under_the_action_it_measures(
+    base_env: None, fake_models: dict[str, list], monkeypatch: pytest.MonkeyPatch  # type: ignore[type-arg]
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def _outcomes(**kwargs: object) -> OutcomesOut:
+        seen.update(kwargs)
+        return OutcomesOut(outcomes=[
+            # One need, measured by both actions: it sits under S2, S1 only supports it.
+            OutcomeOut(ref="S2", also_measures=["S1"], text=ACTION_2.outcome_text,
+                       evidence_ids=["A1", "A2"]),
+            OutcomeOut(ref="S1", text=f" {ACTION_2.outcome_text} ", evidence_ids=["A1"]),  # repeat
+            OutcomeOut(ref="S9", text=ACTION_1.outcome_text, evidence_ids=["A1"]),  # not an action
+        ])
+
+    with TestClient(create_app()) as client:
+        session = _start(client)
+        url = f"/care-plans/sessions/{session['sessionId']}"
+        client.post(f"{url}/cards/S1/decision", json={"decision": "add"}, headers=HEADERS)
+        client.post(f"{url}/cards/S2/decision", json={"decision": "add"}, headers=HEADERS)
+        monkeypatch.setattr("careplan_ai.agents.care_plan.llm.write_outcomes", _outcomes)
+        s = client.post(f"{url}/outcomes", headers=HEADERS).json()
+
+    # The flagged risks go to the outcome step, so each one gets an outcome.
+    assert [r.evidence_id for r in seen["risks"]] == ["A1", "A2"]  # type: ignore[attr-defined]
+    s1, s2 = s["cards"]
+    assert s1["outcome"] is None and s1["outcomeAttempted"] is True
+    assert (s2["outcome"]["text"], s2["outcome"]["evidenceIds"]) == (
+        ACTION_2.outcome_text, ["A1", "A2"])  # A1 allowed: it is S1's quote
+    # The verifier sees the quotes of every action the outcome measures.
+    assert fake_models["verify"][-1] == [
+        ("S2.outcome", ACTION_2.outcome_text, ["A2", "P2", "R1", "O1", "A1"])]
+    assert s["outcomesToWrite"] == []
+
+
+def test_a_later_outcome_call_does_not_repeat_an_earlier_outcome(
+    base_env: None, fake_models: dict[str, list], monkeypatch: pytest.MonkeyPatch  # type: ignore[type-arg]
+) -> None:
+    # OPENCARE-98: outcomes for actions added later are checked against those already offered,
+    # and only the flagged risks the new actions answer go to the outcome step.
+    seen: list[dict[str, object]] = []
+
+    async def _outcomes(**kwargs: object) -> OutcomesOut:
+        seen.append(kwargs)
+        ref = kwargs["actions"][0][0]  # type: ignore[index]
+        return OutcomesOut(outcomes=[
+            OutcomeOut(ref=ref, text=ACTION_1.outcome_text, evidence_ids=["A1"])])
+
+    with TestClient(create_app()) as client:
+        session = _start(client)
+        url = f"/care-plans/sessions/{session['sessionId']}"
+        monkeypatch.setattr("careplan_ai.agents.care_plan.llm.write_outcomes", _outcomes)
+        client.post(f"{url}/cards/S1/decision", json={"decision": "add"}, headers=HEADERS)
+        first = client.post(f"{url}/outcomes", headers=HEADERS).json()
+        client.post(f"{url}/cards/S2/decision", json={"decision": "add"}, headers=HEADERS)
+        second = client.post(f"{url}/outcomes", headers=HEADERS).json()
+
+    assert first["cards"][0]["outcome"]["text"] == ACTION_1.outcome_text
+    # The same outcome again under S2 is not offered.
+    assert second["cards"][1]["outcome"] is None
+    assert [r.evidence_id for r in seen[0]["risks"]] == ["A1"]  # type: ignore[attr-defined]
+    assert [r.evidence_id for r in seen[1]["risks"]] == ["A2"]  # type: ignore[attr-defined]
+
+
+def test_outcome_prompt_lists_the_flagged_risks() -> None:
+    from careplan_ai.agents.care_plan.prompts import build_outcome_messages
+    from careplan_ai.agents.care_plan.schemas import RiskFlag
+
+    with_risks = build_outcome_messages(
+        resident_name="Cathy", actions=[], pathway="MUST",
+        risks=[RiskFlag(evidence_id="A3", reason="Weight loss")])[1].content
+    without = build_outcome_messages(resident_name="Cathy", actions=[], pathway="MUST")[1].content
+    assert "Flagged risks:\n- [A3] Weight loss" in with_risks
+    assert "Flagged risks:\nnone" in without
 
 
 def test_a_rejected_outcome_is_rewritten_once_with_the_verifiers_reason(
@@ -614,7 +690,7 @@ def test_observation_entries_are_numbered_shown_and_citable(
 
     v1 = next(e for e in session["evidence"] if e["id"] == "V1")
     assert (v1["sourceType"], v1["label"], v1["sourceRef"], v1["text"]) == (
-        "observation", "Oral Health", "65f0a1", "Oral care: Prompted; Gums: Sore"
+        "observation", "Oral Health", "65f0a1", "Oral care: Prompted · Gums: Sore"
     )
     assert session["cards"][0]["evidenceIds"] == ["A1", "V1"]
     # The verifier judges the action against the reading it cites.
