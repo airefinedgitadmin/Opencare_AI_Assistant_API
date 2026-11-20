@@ -99,7 +99,21 @@ _REASON_WORDS = (
     r"|(?<!far\s)(?<!soon\s)(?<!much\s)(?<!long\s)(?<!well\s)(?<!often\s)(?<!such\s)"
     r"as\s+" + _PERSON + r"\s+(?:is|was|has|had|no\s+longer|cannot|can't|does\s+not|doesn't|"
     r"did\s+not|didn't|keeps|tends)"
+    # OPENCARE-99: "... small portions with sweet options as she prefers these" gives the reason;
+    # "as she prefers it" / "as she prefers" (the way she likes it) is still care.
+    r"|as\s+" + _PERSON + r"\s+(?:prefers|likes|enjoys|dislikes)\s+(?:these|them|this|that|those)"
     r"|noting\s+(?:that\s+)?" + _PERSON + r"|since\s+" + _PERSON + r"|given\s+that)\b"
+)
+# OPENCARE-99: an action that tacks on how things stand ("...; a dietitian referral has been
+# requested and she has a poor appetite reported to the GP") - two things in one, and a status is
+# not care. Kept (the care is still there); the agent is asked to write one action per need.
+# Only a clause that IS a status - "; <a/the/her ...> <up to 4 words> has been <done>" - so care
+# after a semicolon ("; if a new medicine has been started, check ...", "; check whether the
+# referral has been made") is never matched.
+_STATUS_TAIL = re.compile(
+    r";\s*(?:a|an|the|her|his|their)\s+[\w'’-]+(?:\s+[\w'’-]+){0,3}?\s+(?:has|have|had)\s+been\s+"
+    r"(?:requested|made|started|sent|reported|arranged|booked|referred|informed|told)\b",
+    re.IGNORECASE,
 )
 _REASON = re.compile(_REASON_WORDS, re.IGNORECASE)
 # The reason clause runs to the next comma, semicolon or full stop - a dot or comma inside a
@@ -129,21 +143,38 @@ def word_overlap(a: str, b: str) -> float:
     return len(first & second) / len(union) if union else 0.0
 
 
+# OPENCARE-99: or when nearly all of the shorter action's content words (4 or more) are in the
+# other - "offer small portions and sweet foods" inside a longer preferences action.
+SAME_NEED_CONTAINED = 0.75
+_MIN_CONTAINED_WORDS = 4
+
+
+def _contained(a: str, b: str) -> bool:
+    first, second = content_stems([a]), content_stems([b])
+    shorter = min(len(first), len(second))
+    return shorter >= _MIN_CONTAINED_WORDS and len(first & second) / shorter > SAME_NEED_CONTAINED
+
+
 def overlapping_actions(texts: list[str]) -> list[tuple[int, int]]:
     """Index pairs of texts that say mostly the same thing."""
     return [
         (i, j)
         for i in range(len(texts))
         for j in range(i + 1, len(texts))
-        if word_overlap(texts[i], texts[j]) > SAME_NEED_OVERLAP
+        if word_overlap(texts[i], texts[j]) > SAME_NEED_OVERLAP or _contained(texts[i], texts[j])
     ]
 
 
 # OPENCARE-98: an outcome where a record stands in for the result ("Agnes is recorded as using her
 # walker") is not a result for the resident. Only "recorded AS ...": "each PRN dose is recorded
 # with its effect" and "preferences are recorded and followed" are results the rules ask for.
+# OPENCARE-99 adds the record as the subject: "Agnes's recorded daily fluid intake reaches ...".
 _RECORDING_OUTCOME = re.compile(
-    r"\b(?:is|are|was|were|be|being|been)\s+(?:recorded|documented|noted|logged|charted)\s+as\b",
+    r"\b(?:is|are|was|were|be|being|been)\s+(?:recorded|documented|noted|logged|charted)\s+as\b"
+    # Only "recorded" describing the subject ("Agnes's / her / the recorded ... intake"), not a
+    # record being kept of a result ("each drink is recorded with the amount she drinks").
+    r"|(?:['’]s|\bher|\bhis|\btheir|\bthe)\s+(?:recorded|documented|logged|charted)\s+"
+    r"(?:[a-z]+\s+){0,2}(?:intake|amounts?|weights?|totals?|readings?)\b",
     re.IGNORECASE,
 )
 # The "no <thing>" goal of an outcome ("has no further falls", "no new skin tears"), so the same
@@ -428,6 +459,22 @@ def detail_warnings(text: str, sources: list[str]) -> list[str]:
     return warnings
 
 
+def linked_charts(evidence: list[EvidenceItem]) -> list[list[str]]:
+    """OPENCARE-99: one id group per current chart linked to this pathway (primary, not history):
+    its summary line first, then its entries newest first - an action must cite one of them."""
+    charts: dict[str, list[EvidenceItem]] = {}
+    for item in evidence:
+        if ((item.is_observation or item.is_chart_summary) and item.linked_to_pathway
+                and not item.supporting and not item.historical):
+            charts.setdefault(item.label, []).append(item)
+    groups = []
+    for items in charts.values():
+        summaries = [i.id for i in items if i.is_chart_summary]
+        entries = [i.id for i in items if i.is_observation]
+        groups.append(summaries + entries[::-1])
+    return groups
+
+
 def _dedupe(ids: list[str]) -> list[str]:
     return list(dict.fromkeys(i.strip() for i in ids if i and i.strip()))
 
@@ -571,6 +618,9 @@ def validate_draft(
             required.add(source.id)
         elif source.is_note and _required_note(source, note_kinds.get(source.id)):
             required.add(source.id)
+        elif source.source_type == SourceType.CARE_STANDARD:
+            # OPENCARE-99: each step of the care standard the recorded score calls for.
+            required.add(source.id)
 
     # --- actions ---
     context_sources = [s for s in (resident_name, pathway) if s]
@@ -645,6 +695,18 @@ def validate_draft(
                 "the reason stays in the cited evidence."
             )
             text = strip_reason(text)
+
+        status = _STATUS_TAIL.search(text)
+        if status:
+            # Kept without the status, as a reason is: the care before it is still care.
+            problems.append(
+                f"Action \"{text[:80]}\" adds how things stand after a semicolon (something "
+                "that has been requested, started or reported). Write only what staff do, one "
+                "action per need; the status stays in the cited evidence."
+            )
+            rest = _SENTENCE_END.split(text[status.end():], maxsplit=1)
+            text = (text[:status.start()].rstrip(" ,;") + "."
+                    + (" " + rest[1] if len(rest) > 1 else "")).strip()
 
         if _REACTIVE.search(text):
             # OPENCARE-98: "If Agnes says she feels light-headed, staff should..." waits for the
@@ -792,7 +854,9 @@ def validate_draft(
     # Needs a reader agent found in records the care plan agent didn't start
     # with: an action must cite one of each record's ids (the same record on
     # several dates counts once), or it is shown word for word.
-    for group in required_groups or []:
+    # OPENCARE-99: so must each current chart linked to this pathway (its summary line, else its
+    # newest entry, is shown) - the Food chart of a MUST plan was read but never acted on.
+    for group in [*(required_groups or []), *linked_charts(evidence)]:
         first = by_id.get(group[0])
         if first is None or group[0] in required or any(i in covered for i in group):
             continue
