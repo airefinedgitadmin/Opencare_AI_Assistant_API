@@ -135,7 +135,7 @@ def test_build_evidence_makes_one_item_per_observation_entry() -> None:
     assert [e.id for e in evidence] == ["V1", "V2"]
     v1, v2 = evidence
     assert (v1.text, v1.label, v1.date, v1.source_ref) == (
-        "Drink: Tea; Amount (ml): 200", "Fluid Chart", "12/10/2026", "m1"
+        "Drink: Tea · Amount (ml): 200", "Fluid Chart", "12/10/2026", "m1"
     )
     assert v1.source_type == SourceType.OBSERVATION
     assert v1.is_observation and not v1.is_note

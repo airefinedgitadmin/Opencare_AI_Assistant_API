@@ -20,6 +20,7 @@ from careplan_ai.agents.care_plan.schemas import (
     OutcomesOut,
     ReadOut,
     RedraftOut,
+    RiskFlag,
     VerifyOut,
 )
 from careplan_ai.library.models import StyleExample
@@ -40,12 +41,14 @@ async def write_outcomes(
     examples: list[StyleExample] | None = None,
     feedback: dict[str, str] | None = None,
     pathway: str | None = None,
+    risks: list[RiskFlag] | None = None,
 ) -> OutcomesOut:
-    """Care plan agent's outcome step: one outcome per added action. `feedback`
+    """Care plan agent's outcome step: one outcome per need or flagged risk the added
+    actions answer, each under the action it measures most directly. `feedback`
     = ref -> the rejected outcome and the verifier's reason, for a rewrite."""
     messages = build_outcome_messages(
         resident_name=resident_name, actions=actions, examples=examples, feedback=feedback,
-        pathway=pathway,
+        pathway=pathway, risks=risks,
     )
     return await invoke_structured("primary", OutcomesOut, messages)
 
