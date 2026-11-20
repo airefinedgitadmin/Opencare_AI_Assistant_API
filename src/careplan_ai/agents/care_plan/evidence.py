@@ -19,6 +19,8 @@ and the code checks can tell sources apart at a glance:
     T1..  one summary line per chart, computed here from its entries (count,
           days, each number's range and latest value) - so a long chart is
           always represented exactly, whatever is read of its entries
+    K1..  the care standard a recorded score calls for (standards.py) - e.g.
+          the steps for the MUST band in the assessment
 
 Nothing is capped or clipped here: deck slide 20 says no information may be
 removed or skipped. What the model reads is decided by token budget in
@@ -31,6 +33,7 @@ from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 
 from careplan_ai.agents.care_plan.schemas import EvidenceItem, SourceType
+from careplan_ai.agents.care_plan.standards import care_standards, daily_target
 from careplan_ai.api.schemas.agent import (
     NoteIn,
     ObservationIn,
@@ -283,14 +286,27 @@ def build_evidence(
 
     v_count = 0
     recorded: list[ObservationIn] = []
+    # OPENCARE-99: a value every entry of a chart repeats (the daily target, "Record type:
+    # Intake") is said once, in the chart's summary line, not on each entry; and an amount
+    # counted against a daily target carries the day's running total.
+    repeated = _repeated_fields(request.observations)
+    running = _running_totals(request.observations)
+    chart_types: dict[str, str | None] = {}
+    chart_fields: dict[str, list[tuple[str, str]]] = {}
     for entry in request.observations:
         entry_dropped: list[str] = []
-        text = observation_text(entry, entry_dropped)
+        text = observation_text(
+            entry, entry_dropped,
+            leave_out=repeated.get((_chart_name(entry), entry.historical), set()),
+            running=running.get(id(entry)),
+        )
         note_drop(f"observation:{entry.entry_id}:{id(entry)}", entry_dropped)
         if not text:
             continue  # an empty entry records nothing
         v_count += 1
         recorded.append(entry)
+        chart_types[f"V{v_count}"] = entry.observation_type
+        chart_fields[f"V{v_count}"] = _fields(entry)
         items.append(
             EvidenceItem(
                 id=f"V{v_count}",
@@ -305,11 +321,136 @@ def build_evidence(
             )
         )
 
-    return items + chart_summaries(recorded)
+    items += chart_summaries(recorded)
+    # OPENCARE-99: the care the recorded MUST band (or a daily fluid target) calls for - K items.
+    return items + care_standards(
+        items,
+        pathway=request.pathway,
+        resident_name=request.resident_name,
+        chart_types=chart_types,
+        chart_fields=chart_fields,
+    )
 
 
 def _chart_name(entry: ObservationIn) -> str:
     return entry.observation_name.strip() or "Observation"
+
+
+def _clean(text: str | None) -> str:
+    return _WHITESPACE.sub(" ", text or "").strip()
+
+
+def _fields(entry: ObservationIn) -> list[tuple[str, str]]:
+    """The entry's filled-in (field, value) pairs, as recorded."""
+    return [(_clean(v.field), _clean(v.value)) for v in entry.values if _clean(v.value)]
+
+
+def _charts(entries: list[ObservationIn]) -> dict[tuple[str, bool], list[ObservationIn]]:
+    """Entries by chart - current and history apart, as the summary lines are."""
+    charts: dict[tuple[str, bool], list[ObservationIn]] = {}
+    for entry in entries:
+        charts.setdefault((_chart_name(entry), entry.historical), []).append(entry)
+    return charts
+
+
+def _is_entry_when(field: str, value: str) -> bool:
+    """The field is the entry's own date and time ("Date & Time"), not another date."""
+    return (readable_date(value) != value and bool(_ENTRY_WHEN.search(field))
+            and not _OTHER_DATE.search(field))
+
+
+def _repeated_fields(entries: list[ObservationIn]) -> dict[tuple[str, bool], set[str]]:
+    """Per chart of 2+ entries: the fields every entry has with the same value."""
+    repeated: dict[tuple[str, bool], set[str]] = {}
+    for key, group in _charts(entries).items():
+        if len(group) < 2:
+            continue
+        common = dict(_fields(group[0]))
+        for entry in group[1:]:
+            values = dict(_fields(entry))
+            common = {f: v for f, v in common.items() if values.get(f) == v}
+        same = {f for f, v in common.items() if f and not _is_entry_when(f, v)}
+        if same:
+            repeated[key] = same
+    return repeated
+
+
+def _entry_sort_key(entry: ObservationIn) -> tuple[tuple[int, int, int], str]:
+    """(day, time) of an entry: its own Date & Time, else the date it was recorded."""
+    for field, value in _fields(entry):
+        if _is_entry_when(field, value):
+            shown = readable_date(value)
+            day = _day(shown) or (0, 0, 0)
+            return day, shown[11:16]
+    return _day(entry.recorded_date) or (0, 0, 0), ""
+
+
+def _counted_fields(entry: ObservationIn, unit: str) -> list[str]:
+    """Amount fields counted against a daily target in `unit`: same unit, not the target, a total
+    or an output ("Current intake (ml)", not "Output (ml)"). An output entry ("Record type:
+    Output") counts nothing towards intake."""
+    if any(re.fullmatch(r"output", v, re.IGNORECASE) for _f, v in _fields(entry)):
+        return []
+    return [
+        f for f, v in _fields(entry)
+        if f.casefold().endswith(f"({unit.casefold()})")
+        and not re.search(r"\b(?:target|total|output|balance)\b", f, re.IGNORECASE)
+        and _NUMBER.fullmatch(v)
+    ]
+
+
+def _chart_target(group: list[ObservationIn]) -> tuple[str, float, str] | None:
+    for entry in group:
+        target = daily_target(_fields(entry))
+        if target is not None and target[2]:
+            return target
+    return None
+
+
+def _running_totals(entries: list[ObservationIn]) -> dict[int, dict[str, str]]:
+    """id(entry) -> {field: " (running total 200 ml)"} for amounts on a chart with a daily target,
+    added up per day in the order the chart dates them. Code adds them, so the model never has
+    to (it may not calculate)."""
+    running: dict[int, dict[str, str]] = {}
+    for group in _charts(entries).values():
+        target = _chart_target(group)
+        if target is None:
+            continue
+        unit = target[2]
+        totals: dict[tuple[tuple[int, int, int], str], float] = {}
+        for entry in sorted(group, key=_entry_sort_key):
+            day = _entry_sort_key(entry)[0]
+            for field in _counted_fields(entry, unit):
+                value = float(dict(_fields(entry))[field])
+                totals[(day, field)] = totals.get((day, field), 0.0) + value
+                running.setdefault(id(entry), {})[field] = (
+                    f" (running total {totals[(day, field)]:g} {unit})"
+                )
+    return running
+
+
+def _daily_totals(group: list[ObservationIn]) -> str | None:
+    """"700 ml against a 1500 ml target" (one day) or "daily total against a 1500 ml target:
+    15/11/2026 900 ml, 16/11/2026 700 ml" - the amounts added up per chart day."""
+    target = _chart_target(group)
+    if target is None:
+        return None
+    _field, amount, unit = target
+    per_day: dict[tuple[int, int, int], float] = {}
+    shown_day: dict[tuple[int, int, int], str] = {}
+    for entry in group:
+        day = _entry_sort_key(entry)[0]
+        fields = dict(_fields(entry))
+        for field in _counted_fields(entry, unit):
+            per_day[day] = per_day.get(day, 0.0) + float(fields[field])
+            shown_day[day] = f"{day[2]:02d}/{day[1]:02d}/{day[0]}"
+    if not per_day:
+        return None
+    goal = f"a {amount:g} {unit} target"
+    if len(per_day) == 1:
+        return f"{next(iter(per_day.values())):g} {unit} against {goal}"
+    days = ", ".join(f"{shown_day[d]} {per_day[d]:g} {unit}" for d in sorted(per_day))
+    return f"daily total against {goal}: {days}"
 
 
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
@@ -328,37 +469,45 @@ def chart_summaries(entries: list[ObservationIn]) -> list[EvidenceItem]:
     how many, on how many days, and for every numeric field its lowest and
     highest value and the latest one - figures exactly as recorded, nothing
     added up or averaged, so the line is as quotable as the entries."""
-    charts: dict[tuple[str, bool], list[ObservationIn]] = {}
-    for entry in entries:
-        charts.setdefault((_chart_name(entry), entry.historical), []).append(entry)
-
     summaries: list[EvidenceItem] = []
-    for (name, historical), group in charts.items():
+    repeated = _repeated_fields(entries)
+    for (name, historical), group in _charts(entries).items():
         if len(group) < 2:
             continue  # one entry says it all
-        # Stable: same-day entries keep the backend's (oldest first) order.
-        ordered = sorted(group, key=lambda e: _day(e.recorded_date) or (0, 0, 0))
+        # OPENCARE-99: in the order the chart dates them (its own Date & Time), so "latest" is
+        # the last drink given, not the last one typed in. Stable for equal times.
+        ordered = sorted(group, key=_entry_sort_key)
         dated = [e.recorded_date for e in ordered if _day(e.recorded_date)]
         days = len({_day(d) for d in dated})
         parts = [f"{len(group)} entries"]
         if dated:
-            span = dated[0] if dated[0] == dated[-1] else f"{dated[0]} to {dated[-1]}"
-            parts[0] += f" on {days} day{'s' if days != 1 else ''} ({span})"
+            if days == 1:
+                parts[0] += f" on {dated[0]}"
+            else:
+                parts[0] += f" on {days} days ({dated[0]} to {dated[-1]})"
+        totals = _daily_totals(group)
+        if totals:
+            parts.append(totals)
 
         figures: dict[str, list[str]] = {}
         for entry in ordered:
-            for v in entry.values:
-                value = _WHITESPACE.sub(" ", v.value or "").strip()
-                field = _WHITESPACE.sub(" ", v.field).strip()
+            for field, value in _fields(entry):
                 if field and _NUMBER.fullmatch(value):
                     figures.setdefault(field, []).append(value)
+        same = repeated.get((name, historical), set())
         for field, values in figures.items():
             low = min(values, key=float)
             high = max(values, key=float)
-            if float(low) == float(high):
+            if float(low) == float(high) and len(values) == len(group):
                 parts.append(f"{field}: {values[-1]} every time")
+            elif float(low) == float(high):
+                parts.append(f"{field}: {values[-1]}")
             else:
                 parts.append(f"{field}: {low} to {high}, latest {values[-1]}")
+        # Words every entry repeats ("Record type: Intake"), said once here - not on each entry.
+        for field, value in _fields(ordered[0]):
+            if field in same and not _NUMBER.fullmatch(value):
+                parts.append(f"{field}: {value} every time")
 
         summaries.append(
             EvidenceItem(
@@ -366,7 +515,7 @@ def chart_summaries(entries: list[ObservationIn]) -> list[EvidenceItem]:
                 source_type=SourceType.OBSERVATION_SUMMARY,
                 label=name,
                 date=dated[-1] if dated else None,
-                text="; ".join(parts),
+                text=" · ".join(parts),
                 linked_to_pathway=any(e.pathway_linked for e in group),
                 historical=historical,
                 supporting=all(e.is_supporting for e in group),
@@ -409,10 +558,18 @@ def readable_date(value: str) -> str:
     return f"{day} {m.group(4)}:{m.group(5)}" if m.group(4) else day
 
 
-def observation_text(entry: ObservationIn, dropped: list[str] | None = None) -> str:
+def observation_text(
+    entry: ObservationIn,
+    dropped: list[str] | None = None,
+    *,
+    leave_out: set[str] | frozenset[str] = frozenset(),
+    running: dict[str, str] | None = None,
+) -> str:
     """The fields that were filled in, as staff read them (OPENCARE-98): the entry's date and time
     first, without its question, then "Field: value" - "09/11/2026 21:40 · Location of Fall:
-    Bathroom · What Happened?: Slipped on the bathroom floor". ISO dates are shown dd/mm/yyyy."""
+    Bathroom · What Happened?: Slipped on the bathroom floor". ISO dates are shown dd/mm/yyyy.
+    OPENCARE-99: `leave_out` = fields every entry of the chart repeats (said once in its summary);
+    `running` = field -> " (running total 200 ml)" for an amount counted against a daily target."""
     when: str | None = None
     parts = []
     for v in entry.values:
@@ -422,12 +579,16 @@ def observation_text(entry: ObservationIn, dropped: list[str] | None = None) -> 
             if dropped is not None:
                 dropped.append(value)
             continue
-        if not value:
+        if not value or (field and field in leave_out):
             continue
         shown = readable_date(value)
         if (when is None and shown != value and _ENTRY_WHEN.search(field)
                 and not _OTHER_DATE.search(field)):
             when = shown  # the entry's own date and time leads, its question adds nothing
             continue
+        shown += (running or {}).get(field, "")
         parts.append(f"{field}: {shown}" if field else shown)
+    if leave_out and not parts:
+        # Every field is one the chart repeats: the entry still shows what it recorded.
+        return observation_text(entry, None, running=running)
     return " · ".join(([when] if when else []) + parts)

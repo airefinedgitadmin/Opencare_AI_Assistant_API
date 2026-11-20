@@ -178,6 +178,10 @@ class SourceType(StrEnum):
     # One line per chart, computed by code from its entries (how many, which
     # days, each figure's range and latest value) - never by a model.
     OBSERVATION_SUMMARY = "observation_summary"
+    # OPENCARE-99: one step of the care standard a recorded score calls for (the MUST band's
+    # "weigh weekly", the drink step for a daily fluid target) - built by code (standards.py),
+    # never by a model. Every one must be covered by an action.
+    CARE_STANDARD = "care_standard"
 
 
 NOTE_SOURCES = frozenset(

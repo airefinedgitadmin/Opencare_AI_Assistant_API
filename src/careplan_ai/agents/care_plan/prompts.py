@@ -35,6 +35,9 @@ You are given EVIDENCE: numbered items from this resident's own records -
   H = this resident's earlier care plans (archived, or for other pathways)
   V = observation chart entries (fluid, food, TPR, falls diary, ...), one per entry
   T = one chart's summary line, computed from all its entries
+  K = a care standard step: the routine care the recorded score calls for \
+(e.g. the steps for the MUST band in the assessment), or how often to offer \
+drinks for a chart's daily fluid target
 A note marked "resident record" was not written against this pathway; an \
 observation marked "resident record" is from a chart not linked to it. Items \
 marked "history" are from before the current period: use them to understand \
@@ -54,8 +57,16 @@ never cite them.
 - Every action and outcome must cite the ids of ALL evidence it relies on. \
 Cite only ids that appear in the evidence list.
 - Nothing may be missed: every risk you flag, every P item that is still \
-relevant and every note item of kind "new_requirement" must be cited by at \
-least one action.
+relevant, every note item of kind "new_requirement" and every K item must be \
+cited by at least one action.
+- K items are the care standard for what the records show. Write each K step \
+as an action for the resident, citing the K item AND the A, V or T items it \
+responds to (e.g. the MUST score answer, the Food chart). Keep its frequency \
+and its trigger exactly ("weekly", "every 1-2 hours", "less than half of each \
+meal for 3 days"); add nothing a K item does not say.
+- Every chart linked to this pathway (V or T, not "supporting") with entries \
+needs an action that cites it - e.g. a Food chart showing how much of each \
+meal was eaten needs a food action that cites it.
 - An action is the care response to a need or risk in the evidence. Where the \
 evidence shows only the risk (e.g. "Dentures: Yes"), write the support \
 tentatively, as staff would: "Staff should offer Cathy assistance or \
@@ -197,7 +208,10 @@ change (e.g. "no further falls", "redness resolved").
 3. Link to the plan: follow from its actions and the need or risk in their \
 quotes. Every risk listed after "Flagged risks:" needs an outcome.
 4. Use ONLY targets recorded in its quotes (assessment, chart target, SLT, GP, \
-dietitian or nurse advice). If no target is recorded, use general wording \
+dietitian or nurse advice, or a K care standard: "tell the nurse if she eats \
+less than half of each meal" sets "Cathy eats at least half of each main \
+meal"; "rescreen MUST monthly" sets "Cathy's MUST score is the same or lower \
+at the monthly rescreen"). If no target is recorded, use general wording \
 ("Cathy's weight stays stable or goes up by the next review") - never invent a \
 number, frequency, time, amount, equipment, person or diagnosis.
 5. Stay in the pathway: nothing from another pathway, no placeholder text, no \
@@ -342,7 +356,7 @@ def _source_name(item: EvidenceItem) -> str:
         return f"Observation - {item.label}"
     if item.is_chart_summary:
         return f"Observation summary - {item.label}"
-    if item.source_type == SourceType.RELATED_CARE_PLAN:
+    if item.source_type in (SourceType.RELATED_CARE_PLAN, SourceType.CARE_STANDARD):
         return item.label
     return _SOURCE_NAMES[item.source_type] + (" outcome" if item.id.startswith("O") else "")
 

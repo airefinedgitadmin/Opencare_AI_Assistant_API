@@ -188,7 +188,8 @@ def test_each_chart_gets_one_exact_summary_line_computed_in_code() -> None:
     assert [(s.id, s.label, s.date) for s in summaries] == [("T1", "Fluid Chart", "23/10/2026")]
     # Figures exactly as recorded: range and the latest by date - no totals or averages.
     assert summaries[0].text == (
-        "4 entries on 3 days (21/10/2026 to 23/10/2026); "
-        "Amount (ml): 60 to 200, latest 150; Target (ml): 3000 every time"
+        "4 entries on 3 days (21/10/2026 to 23/10/2026) · "
+        "Amount (ml): 60 to 200, latest 150 · Target (ml): 3000 every time · "
+        "Drink: Tea every time"
     )
     assert summaries[0].linked_to_pathway is True and summaries[0].historical is False
