@@ -26,7 +26,9 @@ context.py, and anything it can't read is reported, not dropped.
 """
 
 import re
+from datetime import datetime
 from html.parser import HTMLParser
+from zoneinfo import ZoneInfo
 
 from careplan_ai.agents.care_plan.schemas import EvidenceItem, SourceType
 from careplan_ai.api.schemas.agent import (
@@ -380,12 +382,29 @@ _ISO_DATE = re.compile(
 )
 
 
+_UK = ZoneInfo("Europe/London")
+# A field that IS the entry's own date and time ("Date & Time of Fall", "Date & Time") leads the
+# entry without its question; any other date ("Date of last GP review") keeps its name.
+_ENTRY_WHEN = re.compile(r"\b(?:date|time)\b", re.IGNORECASE)
+_OTHER_DATE = re.compile(
+    r"\b(?:last|next|review|due|previous|birth|admission|appointment|given|started|stopped)\b",
+    re.IGNORECASE,
+)
+
+
 def readable_date(value: str) -> str:
-    """OPENCARE-98: "2026-11-09T21:40" -> "09/11/2026 21:40" (as written - no timezone shift);
-    anything else unchanged."""
-    m = _ISO_DATE.fullmatch(value.strip())
+    """OPENCARE-98: "2026-11-09T21:40" -> "09/11/2026 21:40". A time saved without a zone is shown
+    as written; one with a zone ("...Z") in UK time. Anything else unchanged."""
+    text = value.strip()
+    m = _ISO_DATE.fullmatch(text)
     if not m:
         return value
+    if m.group(4) and (text.endswith(("Z", "z")) or re.search(r"[+-]\d{2}:?\d{2}$", text)):
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00").replace("z", "+00:00"))
+            return moment.astimezone(_UK).strftime("%d/%m/%Y %H:%M")
+        except ValueError:
+            pass
     day = f"{m.group(3)}/{m.group(2)}/{m.group(1)}"
     return f"{day} {m.group(4)}:{m.group(5)}" if m.group(4) else day
 
@@ -406,7 +425,8 @@ def observation_text(entry: ObservationIn, dropped: list[str] | None = None) -> 
         if not value:
             continue
         shown = readable_date(value)
-        if when is None and shown != value:
+        if (when is None and shown != value and _ENTRY_WHEN.search(field)
+                and not _OTHER_DATE.search(field)):
             when = shown  # the entry's own date and time leads, its question adds nothing
             continue
         parts.append(f"{field}: {shown}" if field else shown)

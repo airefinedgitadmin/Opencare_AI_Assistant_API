@@ -345,6 +345,17 @@ async def write_outcomes(
     card_by_id = {c.id: c for c in cards}
     # Outcome (keyed by the action it sits under) -> every action it measures.
     links: dict[str, list[str]] = {}
+    # OPENCARE-98: outcomes already offered or kept on other actions of this plan - a later call
+    # (for actions added since) must not repeat them ("no further falls" twice).
+    earlier = tuple(
+        c.outcome.text for c in session.cards
+        if c.id not in card_by_id and c.outcome is not None and c.outcome.text
+        and c.outcome.status in (CardStatus.PENDING, CardStatus.ADDED)
+    )
+    # Only the flagged risks the actions being written answer: a risk no added action covers
+    # would otherwise be forced into an outcome under an unrelated action.
+    answered = {i for c in cards for i in c.evidence_ids}
+    risks_for_these = [r for r in session.risks if r.evidence_id in answered]
 
     async def attempt(
         todo: list[ActionCard], feedback: dict[str, str], taken: set[str],
@@ -359,7 +370,7 @@ async def write_outcomes(
             examples=session.style_examples,
             feedback=feedback,
             pathway=session.pathway,
-            risks=session.risks,
+            risks=risks_for_these,
         )
         in_todo = [c.id for c in todo]
         # On a rewrite only the rejected outcomes are replaced; the rest is context.
@@ -412,7 +423,7 @@ async def write_outcomes(
             merged.update((e.id, e) for e in quotes[cid])
         return list(merged.values())
 
-    drafts, verdicts = await attempt(cards, {}, set())
+    drafts, verdicts = await attempt(cards, {}, {_normalise(t) for t in earlier}, earlier)
     # An outcome the verifier rejects is rewritten once, with its reason.
     retry = {
         c.id: f"{drafts[c.id].text} - {verdicts[f'{c.id}.outcome'].reason}"
@@ -422,8 +433,8 @@ async def write_outcomes(
     }
     if retry:
         involved = {cid for lead in retry for cid in links.get(lead, [lead])}
-        kept = {_normalise(s.text) for cid, s in drafts.items() if cid not in retry}
-        kept_texts = tuple(s.text for cid, s in drafts.items() if cid not in retry)
+        kept_texts = earlier + tuple(s.text for cid, s in drafts.items() if cid not in retry)
+        kept = {_normalise(t) for t in kept_texts}
         again, again_verdicts = await attempt(
             [c for c in cards if c.id in involved], retry, kept, kept_texts
         )

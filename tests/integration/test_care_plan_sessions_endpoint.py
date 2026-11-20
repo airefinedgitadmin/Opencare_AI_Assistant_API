@@ -232,6 +232,35 @@ def test_one_outcome_per_need_sits_under_the_action_it_measures(
     assert s["outcomesToWrite"] == []
 
 
+def test_a_later_outcome_call_does_not_repeat_an_earlier_outcome(
+    base_env: None, fake_models: dict[str, list], monkeypatch: pytest.MonkeyPatch  # type: ignore[type-arg]
+) -> None:
+    # OPENCARE-98: outcomes for actions added later are checked against those already offered,
+    # and only the flagged risks the new actions answer go to the outcome step.
+    seen: list[dict[str, object]] = []
+
+    async def _outcomes(**kwargs: object) -> OutcomesOut:
+        seen.append(kwargs)
+        ref = kwargs["actions"][0][0]  # type: ignore[index]
+        return OutcomesOut(outcomes=[
+            OutcomeOut(ref=ref, text=ACTION_1.outcome_text, evidence_ids=["A1"])])
+
+    with TestClient(create_app()) as client:
+        session = _start(client)
+        url = f"/care-plans/sessions/{session['sessionId']}"
+        monkeypatch.setattr("careplan_ai.agents.care_plan.llm.write_outcomes", _outcomes)
+        client.post(f"{url}/cards/S1/decision", json={"decision": "add"}, headers=HEADERS)
+        first = client.post(f"{url}/outcomes", headers=HEADERS).json()
+        client.post(f"{url}/cards/S2/decision", json={"decision": "add"}, headers=HEADERS)
+        second = client.post(f"{url}/outcomes", headers=HEADERS).json()
+
+    assert first["cards"][0]["outcome"]["text"] == ACTION_1.outcome_text
+    # The same outcome again under S2 is not offered.
+    assert second["cards"][1]["outcome"] is None
+    assert [r.evidence_id for r in seen[0]["risks"]] == ["A1"]  # type: ignore[attr-defined]
+    assert [r.evidence_id for r in seen[1]["risks"]] == ["A2"]  # type: ignore[attr-defined]
+
+
 def test_outcome_prompt_lists_the_flagged_risks() -> None:
     from careplan_ai.agents.care_plan.prompts import build_outcome_messages
     from careplan_ai.agents.care_plan.schemas import RiskFlag

@@ -213,3 +213,42 @@ def test_a_falls_diary_entry_leads_with_its_date_and_has_no_raw_iso_date() -> No
     assert text == ("09/11/2026 21:40 · Location of Fall: Bathroom · What Happened?: Slipped on "
                     "the bathroom floor while walking without her walker.")
     assert "2026-11-09" not in text and "T21" not in text and "Injury" not in text
+
+
+# --- code review fixes ---
+
+def test_care_instructions_that_look_like_reasons_are_kept() -> None:
+    for text in [
+        "Staff should check Agnes's pressure areas at each change, noting any redness.",
+        "Staff should encourage her to walk as far as she is able with her frame.",
+        "Staff should help her as much as she needs at mealtimes.",
+        "Staff should offer a bath or shower as she prefers.",
+        "Staff should compare her weight with her weight since admission.",
+        "Staff should respond as soon as she presses her call bell.",
+    ]:
+        assert not _REASON.search(text), text
+        assert strip_reason(text) == text
+
+
+def test_no_longer_and_no_more_than_are_not_goals() -> None:
+    kept = ["Agnes is no longer light-headed when standing."]
+    assert not repeats_outcome("Agnes no longer needs help to find the bathroom at night.", kept)
+    assert not repeats_outcome("Agnes wakes no more than twice a night.",
+                               ["Agnes has no more than one fall by the next review."])
+
+
+def test_a_zoned_time_is_shown_in_uk_time() -> None:
+    assert readable_date("2026-07-09T20:40:00.000Z") == "09/07/2026 21:40"  # BST
+    assert readable_date("2026-11-09T21:40:00Z") == "09/11/2026 21:40"  # GMT
+
+
+def test_only_the_entrys_own_date_leads_without_its_name() -> None:
+    entry = ObservationIn.model_validate({
+        "observationName": "TPR", "values": [
+            {"field": "Date of last GP review", "value": "2026-10-01"},
+            {"field": "Date & Time", "value": "2026-11-16T09:00"},
+            {"field": "Pulse", "value": "72"},
+        ],
+    })
+    assert observation_text(entry) == ("16/11/2026 09:00 · Date of last GP review: 01/10/2026 · "
+                                       "Pulse: 72")

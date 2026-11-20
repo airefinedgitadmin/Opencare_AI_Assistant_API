@@ -89,11 +89,17 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 # A reason clause in an action ("... because she was coughing", "due to ..."). The action is still
 # care, so it is kept and only the reason is taken out. "Medication due to be given" is a time,
 # not a reason.
-# OPENCARE-98 adds "as she / as he / as they" (not "as soon as she"), "noting", "since" and "given
-# that": "... at night as she is no longer safe to walk alone", "... noting she has needed help".
+# OPENCARE-98 adds the reasons the Falls retest found - "... at night as she is no longer safe to
+# walk alone", "... noting she has needed help twice", "... since she fell", "given that ...".
+# Only those forms: "noting any redness" is a check, "as far as she is able" / "as soon as she
+# wakes" / "as she prefers" are care, and "since admission" is a time.
+_PERSON = r"(?:she|he|they)"
 _REASON_WORDS = (
     r"\b(?:because|due\s+to(?!\s+be\b)|as\s+a\s+result\s+of|owing\s+to"
-    r"|(?<!soon\s)as\s+(?:she|he|they)|noting|since|given\s+that)\b"
+    r"|(?<!far\s)(?<!soon\s)(?<!much\s)(?<!long\s)(?<!well\s)(?<!often\s)(?<!such\s)"
+    r"as\s+" + _PERSON + r"\s+(?:is|was|has|had|no\s+longer|cannot|can't|does\s+not|doesn't|"
+    r"did\s+not|didn't|keeps|tends)"
+    r"|noting\s+(?:that\s+)?" + _PERSON + r"|since\s+" + _PERSON + r"|given\s+that)\b"
 )
 _REASON = re.compile(_REASON_WORDS, re.IGNORECASE)
 # The reason clause runs to the next comma, semicolon or full stop - a dot or comma inside a
@@ -142,7 +148,12 @@ _RECORDING_OUTCOME = re.compile(
 )
 # The "no <thing>" goal of an outcome ("has no further falls", "no new skin tears"), so the same
 # goal is set by one outcome only.
-_NO_GOAL = re.compile(r"\bno\s+(?:further\s+|more\s+|new\s+)?([a-z]+)", re.IGNORECASE)
+# Not "no longer", "no more than", "no less than", "no later than" - those aren't goals.
+_NO_GOAL = re.compile(
+    r"\bno\s+(?!longer\b|more\s+than\b|less\b|later\b|sooner\b|fewer\b|one\b|other\b)"
+    r"(?:further\s+|more\s+|new\s+)?([a-z]+)",
+    re.IGNORECASE,
+)
 
 
 def describes_recording(text: str) -> bool:
