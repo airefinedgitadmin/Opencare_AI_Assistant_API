@@ -3,6 +3,7 @@ title, summary, tags, type and main points. The manager checks and edits every f
 saving; nothing here is stored or used by Buddy until they do.
 """
 
+import asyncio
 import io
 import json
 import re
@@ -136,7 +137,9 @@ def validate(raw: dict[str, Any], emergency_ids: list[str]) -> KbIndexResult:
 
 
 async def index(file_name: str, data: bytes, emergency_ids: list[str]) -> KbIndexResult:
-    text = extract_text(file_name, data)
+    # Reading a large PDF or Word file is slow, CPU-bound work: done in a worker thread so other
+    # requests (Buddy chat, care plans) on this worker are not held up meanwhile.
+    text = await asyncio.to_thread(extract_text, file_name, data)
     started = time.monotonic()
     try:
         reply = await get_buddy_model().ainvoke(

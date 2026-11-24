@@ -85,6 +85,33 @@ def test_a_fire_procedure_is_suggested_as_an_emergency_procedure(
     assert "DOCUMENT (Fire_Procedure.txt):\nFire Procedure\nRaise the alarm" in prompt
 
 
+def test_the_file_is_read_off_the_event_loop(
+    base_env: None, fake: FakeModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Code review: reading a large PDF must not hold up other requests on this worker."""
+    import threading
+
+    seen: list[str] = []
+    real = kb.extract_text
+
+    def spy(file_name: str, data: bytes) -> str:
+        seen.append(threading.current_thread().name)
+        return real(file_name, data)
+
+    monkeypatch.setattr(kb, "extract_text", spy)
+    fake.reply = FIRE_REPLY
+    with TestClient(create_app()) as client:
+        loop_thread: list[str] = []
+
+        async def where() -> None:
+            loop_thread.append(threading.current_thread().name)
+
+        client.portal.call(where)
+        assert _post(client, "Fire_Procedure.txt", FIRE.encode()).status_code == 200
+
+    assert seen and seen[0] != loop_thread[0]
+
+
 def test_a_policy(base_env: None, fake: FakeModel) -> None:
     fake.reply = (
         '{"title": "Visiting Policy", "summary": "When and how family can visit.",'
