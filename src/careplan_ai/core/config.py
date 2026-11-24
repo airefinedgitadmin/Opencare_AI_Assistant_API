@@ -193,6 +193,21 @@ class Settings(BaseSettings):
     # careplan_ai/buddy/prompts. Lets the wording change without a release.
     buddy_prompt_dir: str | None = None
 
+    # --- Buddy knowledge indexing (OPENCARE-109): /buddy/kb/index ---
+    buddy_kb_max_bytes: int = 10 * 1024 * 1024
+    # Characters of the document sent to the model.
+    buddy_kb_max_chars: int = 12_000
+    buddy_kb_min_tags: int = 3
+    buddy_kb_max_tags: int = 6
+    buddy_kb_kinds: list[str] = Field(
+        default_factory=lambda: ["Policy", "Procedure", "Guidance", "Emergency procedure"]
+    )
+    buddy_kb_emergency_kind: str = "Emergency procedure"
+    # The emergency types a procedure can be for, when Java doesn't send the home's own list.
+    buddy_kb_emergency_ids: list[str] = Field(
+        default_factory=lambda: ["collapse", "fire", "missing", "power", "flood", "gas"]
+    )
+
     @model_validator(mode="after")
     def _resolve_model_id(self) -> "Settings":
         if self.model_id is None:
