@@ -9,7 +9,7 @@ life of the process; tests that change env vars must call
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from careplan_ai.core.model_config import get_model_spec
@@ -173,6 +173,26 @@ class Settings(BaseSettings):
     # in-memory storage uses a throwaway key when unset.
     agent_state_key: SecretStr | None = None
 
+    # --- Open Care Buddy chat (OPENCARE-102): /buddy/chat ---
+    # Its own deployment if set; unset = the care plan agent's primary deployment above, so
+    # no new model account is needed. Model ids must exist in core/model_config.py.
+    buddy_deployment: str | None = None
+    buddy_model_id: str | None = None
+    # Low, so answers stay close to the records. Only sent to models that accept it
+    # (gpt-4.1-mini); GPT-5-family models take reasoning effort instead.
+    buddy_temperature: float = 0.1
+    buddy_reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = "low"
+    # Reasoning models count their reasoning in this cap, so keep headroom.
+    buddy_max_response_tokens: int = 4000
+    # The whole model call, retries included; over it the caller gets ai_unavailable.
+    buddy_timeout_seconds: float = 30.0
+    # Turns of the current chat sent with each question, and sources kept from an answer.
+    buddy_history_turns: int = Field(default=6, ge=0)
+    buddy_max_sources: int = Field(default=5, ge=1)
+    # Folder holding chat_prompt.md and open_care_guide.md; unset = the files shipped in
+    # careplan_ai/buddy/prompts. Lets the wording change without a release.
+    buddy_prompt_dir: str | None = None
+
     @model_validator(mode="after")
     def _resolve_model_id(self) -> "Settings":
         if self.model_id is None:
@@ -198,6 +218,14 @@ class Settings(BaseSettings):
             if self.agent_reader_model_id is None:
                 self.agent_reader_model_id = self.agent_reader_deployment
             get_model_spec(self.agent_reader_model_id)
+        if self.buddy_deployment is None:
+            self.buddy_deployment = self.agent_primary_deployment
+            if self.buddy_model_id is None:
+                self.buddy_model_id = self.agent_primary_model_id
+        elif self.buddy_model_id is None:
+            self.buddy_model_id = self.buddy_deployment
+        assert self.buddy_model_id is not None
+        get_model_spec(self.buddy_model_id)
         return self
 
     @property

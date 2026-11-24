@@ -39,6 +39,10 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Open Care Buddy's prompt wording ships as files next to its code (careplan_ai/buddy/prompts).
+[tool.setuptools.package-data]
+"careplan_ai.buddy" = ["prompts/*.md"]
+
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
