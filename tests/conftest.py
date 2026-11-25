@@ -10,6 +10,8 @@ import pathlib
 import pytest
 
 from careplan_ai.agents.base.llm import get_agent_model
+from careplan_ai.buddy import prompt_files
+from careplan_ai.buddy.service import get_buddy_model
 from careplan_ai.core.config import get_settings
 from careplan_ai.core.rate_limit import limiter
 from careplan_ai.library.store import get_vector_store
@@ -50,6 +52,8 @@ def _clear_caches() -> None:
         get_settings.cache_clear()
         get_chat_model.cache_clear()
         get_agent_model.cache_clear()
+        get_buddy_model.cache_clear()
+        prompt_files.clear_cache()
         get_session_store.cache_clear()
         get_vector_store.cache_clear()
         limiter.reset()

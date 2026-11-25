@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from slowapi.middleware import SlowAPIMiddleware
 
+from careplan_ai.api.routers.buddy import router as buddy_router
 from careplan_ai.api.routers.care_plan import router as care_plan_router
 from careplan_ai.api.routers.care_plan_sessions import router as care_plan_sessions_router
 from careplan_ai.api.routers.health import router as health_router
@@ -56,4 +57,5 @@ def create_app() -> FastAPI:
     app.include_router(care_plan_router)
     app.include_router(care_plan_sessions_router)
     app.include_router(library_router)
+    app.include_router(buddy_router)
     return app
