@@ -44,7 +44,12 @@ from careplan_ai.agents.care_plan.schemas import (
     Suggestion,
 )
 from careplan_ai.agents.care_plan.standards import thickened_level
-from careplan_ai.agents.care_plan.superseded import describes_state, rule_not_used, state_lines
+from careplan_ai.agents.care_plan.superseded import (
+    cutting_food_at_level,
+    describes_state,
+    rule_not_used,
+    state_lines,
+)
 
 _NUMBER = re.compile(r"\d+(?:[.:/]\d+)*")
 _WORD = re.compile(r"[A-Za-z][A-Za-z'’-]*")
@@ -113,7 +118,14 @@ _REASON_WORDS = (
     # awareness that continence issues contribute to her falls risk" - the assessment answer
     # tacked on as the reason. Only "with (an) awareness of/that": "be aware of her dizziness"
     # is a check.
-    r"|with\s+(?:an\s+)?awareness\s+(?:of|that))\b"
+    r"|with\s+(?:an\s+)?awareness\s+(?:of|that)"
+    # Retest 26/11 (Rab): the records pointed at instead of the care - "..., as the records
+    # state", "as shown on the Food chart entries", "as the Fluid chart shows 650 ml against a
+    # 1500 ml target". The record is in the cited evidence, which staff see under View.
+    r"|as\s+(?:the\s+)?(?:records?|notes?|assessment|review)\s+(?:states?|shows?|says?)"
+    r"|as\s+(?:shown|recorded|noted)\s+(?:on|in)\s+(?:the\s+|his\s+|her\s+|their\s+)?"
+    r"(?:[\w&]+\s+){0,3}(?:charts?|records?|notes?|entries|assessment)"
+    r"|as\s+(?:the\s+|his\s+|her\s+|their\s+)(?:[\w&]+\s+){0,3}chart\s+shows?)\b"
 )
 # OPENCARE-99: an action that tacks on how things stand ("...; a dietitian referral has been
 # requested and she has a poor appetite reported to the GP") - two things in one, and a status is
@@ -332,6 +344,39 @@ def repeated_instructions(
 # A question with 4 or more content words, at least 80% of them in the action.
 QUESTION_WORDS_MIN = 4
 QUESTION_COPIED = 0.8
+
+
+# Retest 26/11 (Rab, Agnes - Oral Health, Choking): an action carrying an assessment ANSWER's
+# wording ("... where particles/tartar are in most areas and severe halitosis is present", "to
+# address his patchy, fissured, red and coated tongue"). Only a chosen answer (up to
+# ANSWER_WORDS_MAX words - a free-text comment is the staff's own words), with 3 or more content
+# words, at least 80% of them in the action.
+ANSWER_WORDS_MIN = 3
+ANSWER_WORDS_MAX = 15
+
+
+def copies_answer(text: str, evidence: list[EvidenceItem]) -> EvidenceItem | None:
+    """The assessment answer whose wording `text` carries, or None."""
+    action = content_stems([_hyphens(text).replace("-", " ")])
+    for item in evidence:
+        if item.source_type != SourceType.ASSESSMENT or not item.text:
+            continue
+        if len(_WORD.findall(item.text)) > ANSWER_WORDS_MAX:
+            continue
+        answer = content_stems([_hyphens(item.text).replace("-", " ")])
+        if (len(answer) >= ANSWER_WORDS_MIN
+                and len(answer & action) / len(answer) >= QUESTION_COPIED):
+            return item
+    return None
+
+
+# Retest 26/11 (Rab): "Staff should carry out the oral care review: brush ..." - the record named
+# as the care. The care after the colon is kept.
+_REVIEW_LEAD = re.compile(
+    r"\b(?:carry\s+out|follow|complete|action)\s+(?:the\s+)?(?:[\w-]+\s+){0,3}"
+    r"(?:review|assessment|plan)\s*:\s*",
+    re.IGNORECASE,
+)
 
 
 def copies_question(text: str, evidence: list[EvidenceItem]) -> EvidenceItem | None:
@@ -925,6 +970,16 @@ def validate_draft(
                 "without that earlier wording."
             )
             continue
+        level = cutting_food_at_level(text, evidence, pathway)
+        if level is not None:
+            # Also with no earlier plan line saying so (the assessment's "food cutting" answer).
+            dropped += 1
+            problems.append(
+                f"Action \"{text[:80]}\" cuts up the food, but the records give {level}: the food "
+                "already comes at that texture, so cutting is not part of the care, and it was "
+                "dropped. Write that the food is served only at that level instead."
+            )
+            continue
         not_instruction = not_an_instruction(text, records)
         if not_instruction is None and describes_state(text, resident_name):
             # OPENCARE-113: "Willie's skin is intact." says how he is, not what staff do.
@@ -946,6 +1001,13 @@ def validate_draft(
                 f"({', '.join(borrowed)}) and was dropped."
             )
             continue
+
+        if _REVIEW_LEAD.search(text):
+            problems.append(
+                f"Action \"{text[:80]}\" names the record (\"carry out the review:\") instead of "
+                "the care. Write only what staff do; the record stays in the cited evidence."
+            )
+            text = _REVIEW_LEAD.sub("", text, count=1)
 
         if _REASON.search(text):
             # Kept: dropping it could lose the care (e.g. a texture-modified diet). The reason is
@@ -992,6 +1054,14 @@ def validate_draft(
                 "plain words and as a positive instruction; the question and answer stay in the "
                 "cited evidence."
             )
+        else:
+            answer = copies_answer(text, evidence)
+            if answer is not None:
+                problems.append(
+                    f"Action \"{text[:80]}\" repeats the wording of the assessment answer "
+                    f"[{answer.id}] \"{answer.text[:80]}\". Say what staff do for it, in plain "
+                    "words; the answer stays in the cited evidence."
+                )
 
         sources = [by_id[i].text for i in ids] + [by_id[i].label for i in ids] + context_sources
         warnings = detail_warnings(text, sources)

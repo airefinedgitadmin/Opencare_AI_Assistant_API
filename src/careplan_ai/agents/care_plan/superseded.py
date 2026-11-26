@@ -43,9 +43,32 @@ _FLUID_WORD = re.compile(r"\b(?:thick|fluids?|drinks?)\b", re.IGNORECASE)
 # Earlier lines a modified diet or thickened fluids make wrong.
 _UNSAFE_FOR_MODIFIED_DIET = re.compile(
     r"\bnormal\s+(?:diet|food|texture)\b|\bthin\s+(?:fluids?|drinks?)\b"
-    r"|\bcut(?:s|ting)?\s+up\b|\bcut(?:s|ting)?\s+(?:\w+\s+){0,2}(?:food|meat|meals?)\b",
+    r"|\bcut(?:s|ting)?\s+up\b|\bcut(?:s|ting)?\s+(?:[\w'’]+\s+){0,3}(?:food|meat|meals?)\b",
     re.IGNORECASE,
 )
+# Retest 26/11 (Rab, IDDSI Level 5): "Staff should cut and prepare Rab's food before serving it",
+# from the assessment answer "Requires assistance with food cutting". At Level 3-5 the food is
+# already liquidised, pureed or minced, so cutting it is not care - whatever the earlier plan said.
+_CUT_FOOD = re.compile(
+    r"\bcut(?:s|ting)?\s+up\b|\bcut(?:s|ting)?\s+(?:[\w'’]+\s+){0,3}(?:food|meat|meals?)\b",
+    re.IGNORECASE,
+)
+
+
+def cutting_food_at_level(
+    text: str, evidence: list[EvidenceItem], pathway: str | None
+) -> str | None:
+    """The modified diet level ("IDDSI Level 5 minced and moist diet") that makes cutting the
+    food in `text` wrong, or None."""
+    if not pathway or not _CHOKING_PATHWAY.search(pathway) or not _CUT_FOOD.search(text):
+        return None
+    # The DIET level only: thickened fluids alone (a normal diet) may still need cutting up.
+    level = None
+    for record in _current_records(evidence):
+        for m in _MODIFIED_DIET.finditer(record.text):
+            if not _FLUID_WORD.search(m.group(0)):
+                level = m.group(0)
+    return _sentence_case(level) if level else None
 _WEIGH_MONTHLY = re.compile(r"\bweigh\w*\b[^.;]*\bmonthly\b", re.IGNORECASE)
 
 # A line that says what someone or something IS, not what staff do: it starts with the resident
