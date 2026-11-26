@@ -1209,6 +1209,10 @@ def validate_draft(
             "differently for each risk."
         )
 
+    # A flagged risk an action deals with in words but didn't cite is linked to it, so staff don't
+    # see "Not covered" for a risk the plan does cover (and View lists the question as its source).
+    link_risks_by_wording(cards, risks, by_id, resident_name)
+
     # --- 2. completeness: nothing missed, nothing skipped ---
     covered = {i for card in cards for i in card.evidence_ids}
     backfilled = 0
@@ -1311,6 +1315,44 @@ def validate_draft(
         not_covered=not_covered,
         not_actions=not_actions,
     )
+
+
+# "Not covered" retest 26/11 (Nell, Falls): an action that deals with a flagged question in its own
+# words ("... offer music when she is restless or agitated" for "Is the Resident confused,
+# disorientated, restless or highly irritable or agitated?") but cited the notes, not the question.
+# At least this many of the question's (and its chosen answer's) key words must be in the action.
+RISK_WORDS_MIN = 2
+
+
+def link_risks_by_wording(
+    cards: list[ActionCard], risks: list[RiskFlag], by_id: dict[str, EvidenceItem],
+    resident_name: str | None,
+) -> list[tuple[str, int]]:
+    """Links each flagged risk no action cites to the action whose wording shares the most of its
+    key words (RISK_WORDS_MIN or more). Returns (risk id, card index) for each link made."""
+    names = stems([resident_name or ""])
+    cited = {i for card in cards for i in card.risk_evidence_ids}
+    action_words = [content_stems([_hyphens(c.text).replace("-", " ")]) - names for c in cards]
+    links: list[tuple[str, int]] = []
+    for risk in risks:
+        item = by_id.get(risk.evidence_id)
+        if item is None or risk.evidence_id in cited:
+            continue
+        # The question, plus a chosen answer that says what the risk is ("Dizziness on standing");
+        # a plain Yes / No adds nothing.
+        words = content_stems([_hyphens(f"{item.label} {item.text}").replace("-", " ")]) - names
+        best, best_shared = -1, 0
+        for index, aw in enumerate(action_words):
+            shared = len(words & aw)
+            if shared > best_shared:
+                best, best_shared = index, shared
+        if best >= 0 and best_shared >= RISK_WORDS_MIN:
+            card = cards[best]
+            card.risk_evidence_ids.append(risk.evidence_id)
+            if risk.evidence_id not in card.evidence_ids:
+                card.evidence_ids.append(risk.evidence_id)
+            links.append((risk.evidence_id, best))
+    return links
 
 
 def _not_covered_line(source: EvidenceItem) -> str:
