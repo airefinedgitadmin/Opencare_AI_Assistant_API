@@ -108,7 +108,12 @@ _REASON_WORDS = (
     # OPENCARE-99: "... small portions with sweet options as she prefers these" gives the reason;
     # "as she prefers it" / "as she prefers" (the way she likes it) is still care.
     r"|as\s+" + _PERSON + r"\s+(?:prefers|likes|enjoys|dislikes)\s+(?:these|them|this|that|those)"
-    r"|noting\s+(?:that\s+)?" + _PERSON + r"|since\s+" + _PERSON + r"|given\s+that)\b"
+    r"|noting\s+(?:that\s+)?" + _PERSON + r"|since\s+" + _PERSON + r"|given\s+that"
+    # Falls retest 26/11: "..., with awareness of her recent falls in the last 12 months", "with
+    # awareness that continence issues contribute to her falls risk" - the assessment answer
+    # tacked on as the reason. Only "with (an) awareness of/that": "be aware of her dizziness"
+    # is a check.
+    r"|with\s+(?:an\s+)?awareness\s+(?:of|that))\b"
 )
 # OPENCARE-99: an action that tacks on how things stand ("...; a dietitian referral has been
 # requested and she has a poor appetite reported to the GP") - two things in one, and a status is
@@ -119,6 +124,16 @@ _REASON_WORDS = (
 _STATUS_TAIL = re.compile(
     r";\s*(?:a|an|the|her|his|their)\s+[\w'’-]+(?:\s+[\w'’-]+){0,3}?\s+(?:has|have|had)\s+been\s+"
     r"(?:requested|made|started|sent|reported|arranged|booked|referred|informed|told)\b",
+    re.IGNORECASE,
+)
+# MUST retest 26/11: the same status inside the sentence - "continue the fortified diet that has
+# been started", "follow up the dietitian referral that has been requested", "the GP who was told
+# about her poor appetite". Taken out (the care before it stays); "the laxative that was
+# prescribed" is not matched - prescribed/given say which thing, not what has happened.
+_STATUS_CLAUSE = re.compile(
+    r",?\s+(?:that|which|who)\s+(?:has|have|had|was|were)\s+(?:already\s+)?(?:been\s+)?"
+    r"(?:requested|made|started|sent|reported|arranged|booked|referred|informed|told)\b"
+    r"(?:\s+(?:about|of)\s+[^,.;]*)?",
     re.IGNORECASE,
 )
 _REASON = re.compile(_REASON_WORDS, re.IGNORECASE)
@@ -276,6 +291,63 @@ def overlapping_actions(texts: list[str]) -> list[tuple[int, int]]:
     ]
 
 
+# Falls retest 26/11: the same instruction written for several risks ("provide close supervision
+# during mobility when she has poor vision" / "... when she is taking 4 or more medicines") - three
+# content words in a row (small words like "the", "any", "during" skipped) in two actions. MUST
+# retest: "follow up any dietitian referral" / "follow up the dietitian referral". The resident's
+# name doesn't count.
+_SHARED_RUN = 3
+
+
+def _hyphens(text: str) -> str:
+    """Typographic hyphens (non-breaking "ill‑fitting") as plain ones, so words match."""
+    return re.sub("[‐‑‒–]", "-", text)
+
+
+def _runs(text: str, ignore: set[str]) -> set[tuple[str, ...]]:
+    words = [
+        s for s in (_stem(w) for w in _WORD.findall(_hyphens(text)))
+        if s not in ignore and len(s) >= 4 and s not in _STOP_STEMS and s not in _STYLE_STEMS
+    ]
+    return {tuple(words[i:i + _SHARED_RUN]) for i in range(len(words) - _SHARED_RUN + 1)}
+
+
+def repeated_instructions(
+    texts: list[str], resident_name: str | None = None
+) -> list[tuple[int, int]]:
+    """Index pairs of actions that give the same instruction for different reasons."""
+    ignore = stems([resident_name or ""])
+    runs = [_runs(t, ignore) for t in texts]
+    return [
+        (i, j)
+        for i in range(len(texts))
+        for j in range(i + 1, len(texts))
+        if runs[i] & runs[j]
+    ]
+
+
+# Falls retest 26/11: an action that carries an assessment question's wording ("... if she has lost
+# weight recently unintentionally or reduced appetite", "check that she does not wear ill-fitting
+# shoes, high-heel shoes, or shoes without grip") repeats the form instead of saying what staff do.
+# A question with 4 or more content words, at least 80% of them in the action.
+QUESTION_WORDS_MIN = 4
+QUESTION_COPIED = 0.8
+
+
+def copies_question(text: str, evidence: list[EvidenceItem]) -> EvidenceItem | None:
+    """The assessment question whose wording `text` carries, or None."""
+    # "high-heel" and "high- heel" are the same words.
+    action = content_stems([_hyphens(text).replace("-", " ")])
+    for item in evidence:
+        if item.source_type != SourceType.ASSESSMENT or not item.label:
+            continue
+        question = content_stems([_hyphens(item.label).replace("-", " ")])
+        if (len(question) >= QUESTION_WORDS_MIN
+                and len(question & action) / len(question) >= QUESTION_COPIED):
+            return item
+    return None
+
+
 # OPENCARE-98: an outcome where a record stands in for the result ("Agnes is recorded as using her
 # walker") is not a result for the resident. Only "recorded AS ...": "each PRN dose is recorded
 # with its effect" and "preferences are recorded and followed" are results the rules ask for.
@@ -335,6 +407,8 @@ def strip_reason(text: str) -> str:
         return "," if m.group(2) and not m.group(1) else " "
 
     out = _REASON_CLAUSE.sub(cut, text)
+    # "..., as advised and with awareness that ..." -> no "and" left hanging before the stop.
+    out = re.sub(r"\s+(?:and|or)(?=\s*(?:[,.;]|$))", "", out)
     out = re.sub(r"\s+([,.;])", r"\1", " ".join(out.split()))
     out = re.sub(r",(?=[.;])", "", out).strip(" ,")
     return out[:1].upper() + out[1:] if out else text
@@ -620,7 +694,10 @@ def _required_note(item: EvidenceItem, draft_kind: str | None) -> bool:
         # History explains and personalises; a need from the past only becomes
         # a requirement when current evidence raises it again.
         return False
-    if draft_kind == "new_requirement":
+    if draft_kind in ("new_requirement", "update"):
+        # Oral Health retest 26/11: an update changes the care ("can no longer clean her denture
+        # herself; staff clean it morning and night") - the earlier line it replaces is not used,
+        # so the new care must be written, or the note is shown to staff as not covered.
         return True
     # A note written against this pathway that the model didn't classify still
     # counts - when unsure, show it. A resident-level note only counts when
@@ -891,12 +968,29 @@ def validate_draft(
             text = (text[:status.start()].rstrip(" ,;") + "."
                     + (" " + rest[1] if len(rest) > 1 else "")).strip()
 
+        if _STATUS_CLAUSE.search(text):
+            problems.append(
+                f"Action \"{text[:80]}\" says what has already happened (started, requested, "
+                "told). Write only what staff do now; the status stays in the cited evidence."
+            )
+            text = re.sub(r"\s+([,.;])", r"\1", _STATUS_CLAUSE.sub("", text)).strip()
+
         if _REACTIVE.search(text):
             # OPENCARE-98: "If Agnes says she feels light-headed, staff should..." waits for the
             # problem. Kept (it is still care), and the agent is asked for the preventive step.
             problems.append(
                 f"Action \"{text[:80]}\" waits for the problem to happen. Write what staff do "
                 "routinely to prevent it, using only what the evidence gives."
+            )
+
+        question = copies_question(text, evidence)
+        if question is not None:
+            # Kept (the care in it may be right); the agent is asked to say it in its own words.
+            problems.append(
+                f"Action \"{text[:80]}\" repeats the wording of the assessment question "
+                f"[{question.id}] \"{question.label[:80]}\". Say what staff do for that risk, in "
+                "plain words and as a positive instruction; the question and answer stay in the "
+                "cited evidence."
             )
 
         sources = [by_id[i].text for i in ids] + [by_id[i].label for i in ids] + context_sources
@@ -968,10 +1062,21 @@ def validate_draft(
 
     # OPENCARE-98: one action per need - two actions saying mostly the same thing ("take her to
     # the bathroom at night" twice) are the same need written twice.
-    for first, second in overlapping_actions([card.text for card in cards]):
+    texts = [card.text for card in cards]
+    for first, second in overlapping_actions(texts):
         problems.append(
             f"Actions \"{cards[first].text[:60]}\" and \"{cards[second].text[:60]}\" cover the "
             "same need. Write one action for it, citing the evidence of both."
+        )
+    # Falls retest 26/11: the same instruction repeated for different risks.
+    overlapping = set(overlapping_actions(texts))
+    for first, second in repeated_instructions(texts, resident_name):
+        if (first, second) in overlapping:
+            continue
+        problems.append(
+            f"Actions \"{cards[first].text[:60]}\" and \"{cards[second].text[:60]}\" give the "
+            "same instruction. Write it once, citing the evidence of both, or say what staff do "
+            "differently for each risk."
         )
 
     # --- 2. completeness: nothing missed, nothing skipped ---

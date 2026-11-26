@@ -1,0 +1,36 @@
+action:
+
+Staff should keep Agnes’s four‑wheeled walker within reach at all times and place a sensor mat beside her bed overnight, and prompt her to use her walker when she often stands up from her chair to go to the toilet and when she often gets out of bed overnight; offer balance and mobility support during these times, with awareness of her recent falls in the last 12 months.
+Staff should walk with Agnes to the bathroom overnight and do not leave her to walk on her own at night, responding promptly when she asks to go, as per the falls review and with awareness that continence issues contribute to her falls risk and that she does not like waiting for staff.
+Staff should check that Agnes does not wear ill‑fitting shoes, high‑heel shoes, or shoes without grip, and ensure suitable clothing and footwear before mobilising.
+Staff should provide close supervision during mobility and use clear, simple prompts when she is confused, disorientated, restless, highly irritable or agitated, or when she has reduced insight or judgment or is uncooperative.
+Staff should provide close supervision during mobility when Agnes has poor vision.
+Staff should help Agnes sit for a moment before standing and check her lying and standing blood pressure when dizziness on standing is reported.
+Staff should check how Agnes feels before standing and during walking and avoid rushing if she reports dizziness on standing or has lost weight recently unintentionally or reduced appetite.
+Staff should provide close supervision during mobility when she is taking 4 or more medicines.
+Staff to keep her room clear of clutter and her call bell within reach.
+
+
+Outcome:
+
+Agnes uses her four‑wheeled walker every time she stands or walks, including when going to the toilet.
+Agnes reaches and uses the toilet at night with staff support every time without walking on her own.
+Agnes has no further falls by the next review.
+Agnes reports no dizziness on standing by the next review.
+
+
+source:
+Assessment · 18/11/2026 · Ankit Malpani
+Does the Resident often get out of bed overnight?:YesRisk flagged
+Has the Resident had one or more falls in the last 12 months? Any recent falls?:YesRisk flagged
+Does the resident experience::Dizziness on standingRisk flagged
+Is the Resident taking 4 or more medicines?:YesRisk flagged
+Previous care plan · 12/05/2026
+“Staff to keep her room clear of clutter and her call bell within reach.”
+Review note · 18/11/2026
+“She needs her walker within reach at all times and a sensor mat beside her bed.”
+“Falls review: Agnes is no longer safe to walk on her own at night.”
+Observation - Falls Diary
+“09/11/2026 21:40 · Location of Fall: Bathroom · What Happened?: Slipped on the bathroom floor while walking without her walker.”
+Observation - TPR & BP · 16/11/2026
+“16/11/2026 09:00 · Comments: Lying 122/74. Standing 104/62 after 1 minute; said she felt light-headed.”
