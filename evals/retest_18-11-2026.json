@@ -1,0 +1,402 @@
+{
+  "title": "Open Care Buddy retest: 5 test residents (18/11/2026)",
+  "how_to_match": "Each expected item matches when one of its patterns matches one action (or outcome) line. A pattern is terms joined by ' + ' (all must be in the same line); a term is alternatives joined by '/', each matched at the start of a word, case-insensitive. A must_not pattern is ignored when a negation (no, not, never, no longer, avoid, instead of, stop, do not) comes just before it; 'unless' skips it when that pattern is also in the draft; 'scope' limits it to actions or outcomes.",
+  "residents": {
+    "81362": {
+      "name": "Agnes McPhail",
+      "pathways": {
+        "falls": {
+          "title": "Falls Assessment",
+          "actions": [
+            {"name": "Walker within reach at all times", "any": ["walker + reach/beside/near/next to/to hand"]},
+            {"name": "Sensor mat at night", "any": ["sensor mat"]},
+            {"name": "Help to the toilet at night", "any": ["toilet/bathroom + night/overnight"]},
+            {"name": "Toilet before bed", "any": ["toilet/bathroom + before bed/bedtime/before going to bed"]},
+            {"name": "Toilet after the morning diuretic", "any": ["diuretic/water tablet", "toilet + after + morning medic/morning tablet"]},
+            {"name": "Sit before standing, stand slowly", "any": ["sit + before stand/before she stands/before getting up", "stand + slowly"]},
+            {"name": "Closed footwear with grip", "any": ["closed + shoe/footwear/slipper", "well-fitting/well fitting/non-slip/supportive + shoe/footwear/slipper", "shoe/footwear/slipper + with grip/with a good grip/good grip"]},
+            {"name": "Clear route to the bathroom", "any": ["clear + route/path/clutter/way/obstacle"]},
+            {"name": "Night light", "any": ["night light/nightlight/light on"]},
+            {"name": "GP/pharmacist medicines review", "any": ["medicine/medication + review", "pharmacist", "gp + medicine/medication"]},
+            {"name": "Lying and standing BP", "any": ["lying and standing", "postural + blood pressure/bp"]}
+          ],
+          "outcomes": [
+            {"name": "No further falls by review", "any": ["no + fall", "fewer falls", "free from fall"]},
+            {"name": "Uses her walker every time she walks", "any": ["walker + every/always/each"]},
+            {"name": "Gets to the toilet safely at night", "any": ["toilet/bathroom + night/overnight"]},
+            {"name": "Less dizziness on standing", "any": ["dizz/light-headed/lightheaded"]},
+            {"name": "Wears safe footwear", "any": ["footwear/shoe/slipper"]}
+          ],
+          "must_not": [{"name": "Walks independently", "any": ["walks independently", "walk independently"]}],
+          "sources": ["falls diary", "tpr"]
+        },
+        "must": {
+          "title": "MUST",
+          "actions": [
+            {"name": "Weigh weekly", "any": ["weigh/weight + weekly/every week/once a week"]},
+            {"name": "Fortified diet", "any": ["fortif/enrich"]},
+            {"name": "Snacks between meals", "any": ["snack/between meals/supper"]},
+            {"name": "Small portions", "any": ["small/smaller + portion/meal"]},
+            {"name": "Foods she likes (rice pudding, milky tea)", "any": ["rice pudding/milky tea"]},
+            {"name": "Record food and fluid", "any": ["food + chart/record/intake/monitor", "intake + record/chart/monitor"]},
+            {"name": "Offer drinks to reach 1500 ml", "any": ["1500/1,500/1.5 litre/1.5l"]},
+            {"name": "Rescreen MUST monthly", "any": ["must + monthly/rescreen/re-screen/repeat/each month/every month"]},
+            {"name": "Follow up dietitian referral", "any": ["dietitian/dietician"]}
+          ],
+          "outcomes": [
+            {"name": "Weight stable or up by review", "any": ["weight + stable/steady/maintain/increase/gain/no further loss/stays"]},
+            {"name": "Eats at least half of each main meal", "any": ["half/50%"]},
+            {"name": "Drinks 1500 ml a day", "any": ["1500/1,500/1.5 litre/1.5l"]}
+          ],
+          "must_not": [],
+          "sources": ["food", "fluid"]
+        },
+        "bladder_bowel": {
+          "title": "Bladder and Bowel Assessment",
+          "actions": [
+            {"name": "Prompt toileting regularly and before bed", "any": ["toilet + regular/every/hour/before bed/bedtime/routine/schedule"]},
+            {"name": "Walk with her to the toilet", "any": ["walk/accompany/take/go + toilet/bathroom"]},
+            {"name": "Night light and clear signage", "any": ["night light/nightlight/sign"]},
+            {"name": "Pull-up pants changed promptly", "any": ["pull-up/pull up/pad/pants/continence product"]},
+            {"name": "Encourage fluids and fibre", "any": ["fibre/fiber"]},
+            {"name": "Record bowels", "any": ["bowel + record/chart/monitor/diary/note"]},
+            {"name": "Report signs of UTI", "any": ["uti/urine infection/urinary tract/urinary infection"]}
+          ],
+          "outcomes": [
+            {"name": "Clean, dry and comfortable", "any": ["clean + dry", "dry + comfortable"]},
+            {"name": "Gets to the toilet in time, including at night", "any": ["in time/on time", "toilet/bathroom + night"]},
+            {"name": "Bowels open regularly", "any": ["bowel"]},
+            {"name": "No UTI by review", "any": ["uti/urine infection/urinary tract/urinary infection"]}
+          ],
+          "must_not": [],
+          "sources": []
+        },
+        "oral": {
+          "title": "Oral Health Assessment",
+          "actions": [
+            {"name": "Staff clean her denture", "any": ["clean/brush/soak + denture"]},
+            {"name": "Staff brush her teeth morning and night", "any": ["brush + teeth/tooth"]},
+            {"name": "Check the sore spot daily", "any": ["sore"]},
+            {"name": "Drinks and mouth care for dry mouth", "any": ["dry mouth", "sip", "moisten/moisturis/saliva"]},
+            {"name": "Follow up dentist referral", "any": ["dentist", "dental + referral/appointment/visit/check/team"]}
+          ],
+          "outcomes": [
+            {"name": "Mouth clean and comfortable", "any": ["mouth + clean/comfortable", "free from + food/plaque/debris"]},
+            {"name": "Sore spot healed", "any": ["sore + heal/gone/resolv/clear"]},
+            {"name": "Denture fits and is worn", "any": ["denture + fit/worn/wear"]},
+            {"name": "Seen by the dentist", "any": ["dentist", "dental + referral/appointment/visit/check/team"]}
+          ],
+          "must_not": [{"name": "Cleans her own teeth and denture", "any": ["cleans her own/clean her own/cleans own"]}],
+          "sources": ["oral health"]
+        }
+      }
+    },
+    "81363": {
+      "name": "Robert (Rab) Lennox",
+      "pathways": {
+        "choking": {
+          "title": "Choking Risk Assessment",
+          "actions": [
+            {"name": "Level 5 minced and moist diet only", "any": ["level 5/minced and moist"]},
+            {"name": "Level 2 mildly thick fluids only", "any": ["level 2/mildly thick"]},
+            {"name": "Upright 90° for meals", "any": ["upright/90"]},
+            {"name": "Stays upright 30 minutes after meals", "any": ["30 min/thirty min/half an hour"]},
+            {"name": "One-to-one supervision", "any": ["one-to-one/one to one/1:1/1-to-1"]},
+            {"name": "Small mouthfuls, slow pace", "any": ["small mouthful/small spoon/slow/pace"]},
+            {"name": "Stop if he coughs", "any": ["stop/pause + cough"]},
+            {"name": "Adapted cup and cutlery", "any": ["adapted/beaker/aid + cup/cutlery/drink/eat", "adapted cup/adapted cutlery"]},
+            {"name": "Watch temperature and chest signs, report to nurse", "any": ["temperature/chest/breath"]},
+            {"name": "No food or drink if drowsy", "any": ["drowsy/sleepy/alert"]}
+          ],
+          "outcomes": [
+            {"name": "Eats and drinks safely in Level 5 and Level 2 textures", "any": ["level 5/level 2/texture"]},
+            {"name": "No choking episodes", "any": ["chok"]},
+            {"name": "No new chest infection by review", "any": ["chest"]}
+          ],
+          "must_not": [{"name": "Normal diet / thin fluids", "any": ["normal diet", "thin fluid", "thin drink"]}],
+          "sources": ["tpr", "fluid"]
+        },
+        "must": {
+          "title": "MUST",
+          "actions": [
+            {"name": "Weigh weekly (not monthly)", "any": ["weigh/weight + weekly/every week/once a week"]},
+            {"name": "Fortified Level 5 meals", "any": ["fortif/enrich"]},
+            {"name": "Small and frequent meals", "any": ["small + frequent/often/meal/portion"]},
+            {"name": "Help with the second half of meals", "any": ["second half/halfway/half way", "help/assist/support + finish/eat/meal"]},
+            {"name": "Thickened drinks to target", "any": ["thicken/level 2/mildly thick + drink/fluid"]},
+            {"name": "Record food and fluid", "any": ["food + chart/record/intake/monitor", "intake + record/chart/monitor"]},
+            {"name": "Rescreen MUST", "any": ["must + monthly/rescreen/re-screen/repeat/weekly/score"]},
+            {"name": "Dietitian if weight keeps falling", "any": ["dietitian/dietician"]}
+          ],
+          "outcomes": [
+            {"name": "Weight stable or up", "any": ["weight + stable/steady/maintain/increase/gain/no further loss/stays"]},
+            {"name": "Eats at least half of each meal", "any": ["half/50%"]},
+            {"name": "Drinks to his target in Level 2 fluids", "any": ["drink/fluid + target/ml/level 2"]}
+          ],
+          "must_not": [{"name": "Weigh monthly as the only weighing", "any": ["weigh/weight + monthly/every month/once a month"], "unless": "weigh/weight + weekly/every week/once a week", "scope": "actions"}],
+          "sources": ["food", "fluid"]
+        },
+        "waterlow": {
+          "title": "Waterlow",
+          "actions": [
+            {"name": "Daily skin check (sacrum, heels)", "any": ["skin + check/inspect/look", "check + sacrum/heel"]},
+            {"name": "Pressure-relieving cushion", "any": ["cushion"]},
+            {"name": "Pressure-relieving mattress", "any": ["mattress"]},
+            {"name": "Change position regularly, including in the wheelchair", "any": ["reposition/turn/reposition", "change/move + position", "pressure relief"]},
+            {"name": "Skin clean and dry after incontinence", "any": ["clean + dry", "incontinen + skin/clean/wash"]},
+            {"name": "Good nutrition and fluids", "any": ["nutrition/diet/fluid/drink/food/meal"]}
+          ],
+          "outcomes": [
+            {"name": "Skin stays intact", "any": ["skin + intact/healthy/unbroken"]},
+            {"name": "No new pressure damage by review", "any": ["pressure + damage/sore/ulcer/area/injur"]},
+            {"name": "Waterlow score the same or lower", "any": ["waterlow"]}
+          ],
+          "must_not": [],
+          "sources": []
+        },
+        "oral": {
+          "title": "Oral Health Assessment",
+          "actions": [
+            {"name": "Staff brush his teeth twice a day with a soft brush", "any": ["brush + twice/soft/morning/night"]},
+            {"name": "Check and clear the right cheek after meals", "any": ["cheek"]},
+            {"name": "Lip balm for dry lips", "any": ["lip"]},
+            {"name": "Mouth care for dryness", "any": ["dry mouth/moist/sip/saliva/mouth care"]},
+            {"name": "Dentist check", "any": ["dentist", "dental + referral/appointment/visit/check/team"]}
+          ],
+          "outcomes": [
+            {"name": "Mouth clean, moist and comfortable", "any": ["mouth + clean/moist/comfortable"]},
+            {"name": "No food left in his cheek after meals", "any": ["cheek"]}
+          ],
+          "must_not": [],
+          "sources": ["oral health"]
+        }
+      }
+    },
+    "81366": {
+      "name": "Helen (Nell) Strachan",
+      "pathways": {
+        "falls": {
+          "title": "Falls Assessment",
+          "actions": [
+            {"name": "Staff member with her 15:00-18:00", "any": ["15:00/3pm/3 pm/3:00/afternoon"]},
+            {"name": "Walk with her, offer music or singing when restless", "any": ["music/sing"]},
+            {"name": "Hip protectors", "any": ["hip protector"]},
+            {"name": "Well-fitting shoes with grip", "any": ["shoe/footwear/slipper + grip/well-fitting/well fitting/non-slip/closed"]},
+            {"name": "Clear corridors", "any": ["corridor/clutter/obstacle + clear/free/keep"]},
+            {"name": "Night checks", "any": ["night + check/checks"]},
+            {"name": "Report new or sudden confusion to the nurse", "any": ["confus + sudden/new/report/nurse/tell"]}
+          ],
+          "outcomes": [
+            {"name": "No further falls by review", "any": ["no + fall", "fewer falls", "free from fall"]},
+            {"name": "Walks safely with staff in the afternoon", "any": ["walk + staff/carer/afternoon"]},
+            {"name": "Settles with music", "any": ["music/sing"]},
+            {"name": "Wears hip protectors and safe shoes", "any": ["hip protector/shoe/footwear"]}
+          ],
+          "must_not": [{"name": "Walks independently and safely", "any": ["walks independently", "walk independently"]}],
+          "sources": ["falls diary", "tpr"]
+        },
+        "bladder_bowel": {
+          "title": "Bladder and Bowel Assessment",
+          "actions": [
+            {"name": "Offer the toilet regularly and when restless", "any": ["toilet + regular/restless/every/hour/routine"]},
+            {"name": "Picture sign on the door", "any": ["picture/sign"]},
+            {"name": "All-in-one pads changed promptly, skin care", "any": ["pad/all-in-one/continence product"]},
+            {"name": "Help with hygiene", "any": ["hygiene/wash/underwear/clean"]},
+            {"name": "Encourage drinks to 1500 ml", "any": ["1500/1,500/1.5 litre/1.5l"]},
+            {"name": "Watch for signs of UTI and report", "any": ["uti/urine/urinary/infection"]}
+          ],
+          "outcomes": [
+            {"name": "Clean, dry and comfortable", "any": ["clean + dry", "dry + comfortable"]},
+            {"name": "Drinks at least 1500 ml a day", "any": ["1500/1,500/1.5 litre/1.5l"]},
+            {"name": "UTI treated, no new infection by review", "any": ["uti/infection"]}
+          ],
+          "must_not": [],
+          "sources": ["fluid", "tpr"]
+        },
+        "oral": {
+          "title": "Oral Health Assessment",
+          "actions": [
+            {"name": "Staff brush her teeth in the morning", "any": ["brush + morning"]},
+            {"name": "With music", "any": ["music/sing"]},
+            {"name": "Try again later if she refuses, don't force", "any": ["try again/later/return/come back/don't force/do not force/not force"]},
+            {"name": "Lip balm", "any": ["lip"]},
+            {"name": "Watch for pain when eating", "any": ["pain/wince/discomfort/sore"]},
+            {"name": "Dentist appointment", "any": ["dentist", "dental + referral/appointment/visit/check/team"]}
+          ],
+          "outcomes": [
+            {"name": "Teeth and mouth clean and comfortable", "any": ["mouth/teeth + clean/comfortable"]},
+            {"name": "No signs of pain when eating", "any": ["pain/wince/discomfort"]},
+            {"name": "Seen by the dentist", "any": ["dentist", "dental + referral/appointment/visit/check/team"]}
+          ],
+          "must_not": [{"name": "Brushes her own teeth", "any": ["brushes her own/brush her own/brushes own"]}],
+          "sources": ["oral health"]
+        },
+        "choking": {
+          "title": "Choking Risk Assessment (low risk)",
+          "max_actions": 4,
+          "actions": [
+            {"name": "Remind her to slow down and take small mouthfuls", "any": ["slow/small mouthful/smaller mouthful"]},
+            {"name": "Sit upright", "any": ["upright"]},
+            {"name": "Supervise meals as usual", "any": ["supervis/observe/watch"]}
+          ],
+          "outcomes": [
+            {"name": "Eats safely without coughing or choking", "any": ["chok/cough"]}
+          ],
+          "must_not": [{"name": "Modified diet, thickened fluids or SLT referral", "any": ["iddsi", "modified", "thicken", "minced", "puree", "soft and bite", "slt", "speech and language"]}],
+          "sources": []
+        }
+      }
+    },
+    "81364": {
+      "name": "William (Willie) Baxter",
+      "pathways": {
+        "waterlow": {
+          "title": "Waterlow",
+          "actions": [
+            {"name": "Reposition every 2 hours day and night", "any": ["2 hours/two hours/2-hourly/2 hourly/two-hourly"]},
+            {"name": "Pressure-relieving mattress", "any": ["mattress"]},
+            {"name": "Pressure-relieving cushion", "any": ["cushion"]},
+            {"name": "Daily skin check (sacrum, heels)", "any": ["skin + check/inspect/look", "check + sacrum/heel"]},
+            {"name": "Check ears under the oxygen tubing", "any": ["ear"]},
+            {"name": "Gentle skin care for fragile skin", "any": ["gentle/fragile/tissue paper/tissue-paper/moisturis/emollient"]},
+            {"name": "Nutrition and fluids", "any": ["nutrition/diet/fluid/drink/food/meal"]},
+            {"name": "Tissue viability visit", "any": ["tissue viability/tvn"]}
+          ],
+          "outcomes": [
+            {"name": "Skin stays intact", "any": ["skin + intact/healthy/unbroken"]},
+            {"name": "No pressure damage by review", "any": ["pressure + damage/sore/ulcer/area/injur"]},
+            {"name": "Waterlow score the same or lower", "any": ["waterlow"]}
+          ],
+          "must_not": [
+            {"name": "Every 4 hours", "any": ["4 hours/four hours/4-hourly/4 hourly/four-hourly"]},
+            {"name": "\"Skin is intact\" as the plan", "any": ["skin is intact"], "scope": "actions"}
+          ],
+          "sources": ["tpr"]
+        },
+        "must": {
+          "title": "MUST",
+          "actions": [
+            {"name": "Weigh weekly", "any": ["weigh/weight + weekly/every week/once a week"]},
+            {"name": "Small, frequent, fortified meals", "any": ["fortif/enrich", "small + frequent/often"]},
+            {"name": "Foods he likes (soup, rice pudding)", "any": ["soup/rice pudding"]},
+            {"name": "Rest before meals", "any": ["rest"]},
+            {"name": "Oxygen on while eating", "any": ["oxygen"]},
+            {"name": "Record food and fluid", "any": ["food + chart/record/intake/monitor", "intake + record/chart/monitor"]},
+            {"name": "Rescreen MUST", "any": ["must + monthly/rescreen/re-screen/repeat/weekly/score"]},
+            {"name": "Dietitian if weight keeps falling", "any": ["dietitian/dietician"]}
+          ],
+          "outcomes": [
+            {"name": "Weight stable or up", "any": ["weight + stable/steady/maintain/increase/gain/no further loss/stays"]},
+            {"name": "Eats at least half of each small meal", "any": ["half/50%"]},
+            {"name": "Drinks to target", "any": ["drink/fluid + target/ml"]}
+          ],
+          "must_not": [{"name": "Weigh monthly as the only weighing", "any": ["weigh/weight + monthly/every month/once a month"], "unless": "weigh/weight + weekly/every week/once a week", "scope": "actions"}],
+          "sources": ["food", "fluid"]
+        },
+        "oral": {
+          "title": "Oral Health Assessment",
+          "actions": [
+            {"name": "Lip balm (water-based, with oxygen)", "any": ["lip"]},
+            {"name": "Mouth care several times a day", "any": ["mouth care/mouth swab/moist + mouth", "mouth + times a day/regular/hour"]},
+            {"name": "Clean dentures morning and night", "any": ["denture + clean/morning/night/soak"]},
+            {"name": "Sips of water", "any": ["sip/water"]}
+          ],
+          "outcomes": [
+            {"name": "Lips and mouth moist and comfortable", "any": ["lip/mouth + moist/comfortable"]},
+            {"name": "Dentures clean and worn for meals", "any": ["denture"]}
+          ],
+          "must_not": [{"name": "Dentist referral for denture fit", "any": ["dentist", "dental + referral/appointment/visit/check/team"]}],
+          "sources": ["oral health"]
+        },
+        "falls": {
+          "title": "Falls Assessment (low)",
+          "max_actions": 4,
+          "actions": [
+            {"name": "Frame and one carer for walking", "any": ["frame"]},
+            {"name": "Rest before and after walking, oxygen on", "any": ["rest", "oxygen"]},
+            {"name": "Call bell in reach", "any": ["call bell/buzzer/nurse call"]}
+          ],
+          "outcomes": [
+            {"name": "No falls by review", "any": ["no + fall", "free from fall"]},
+            {"name": "Walks safely to the bathroom with his frame and one carer", "any": ["frame", "walk + bathroom/toilet"]}
+          ],
+          "must_not": [{"name": "Sensor mat, hip protectors", "any": ["sensor mat", "hip protector"]}],
+          "sources": []
+        }
+      }
+    },
+    "81365": {
+      "name": "Catherine (Kate) Munro",
+      "pathways": {
+        "falls": {
+          "title": "Falls Assessment",
+          "actions": [
+            {"name": "One carer walks with her", "any": ["walk with/walks with/accompan/one carer"]},
+            {"name": "Especially through doorways", "any": ["door"]},
+            {"name": "Counting or stepping cues when she freezes", "any": ["count/cue/step/freez"]},
+            {"name": "Parkinson's medicines on time", "any": ["on time", "parkinson + medic/tablet"]},
+            {"name": "Sit before standing", "any": ["sit + before stand/before she stands/before getting up", "stand + slowly"]},
+            {"name": "Lying and standing BP", "any": ["lying and standing", "postural + blood pressure/bp"]},
+            {"name": "Hip protectors", "any": ["hip protector"]},
+            {"name": "Clear doorways", "any": ["clear/clutter/obstacle"]},
+            {"name": "Medicines review", "any": ["medicine/medication + review", "pharmacist", "gp + medicine/medication"]}
+          ],
+          "outcomes": [
+            {"name": "Fewer or no falls by review", "any": ["no + fall", "fewer falls", "free from fall"]},
+            {"name": "Walks through doorways safely with a carer", "any": ["door"]},
+            {"name": "Gets her Parkinson's medicines on time", "any": ["on time", "medic/tablet"]},
+            {"name": "Less dizziness on standing", "any": ["dizz/light-headed/lightheaded"]}
+          ],
+          "must_not": [{"name": "Walks with her frame independently", "any": ["frame independently", "walks independently"]}],
+          "sources": ["falls diary", "tpr"]
+        },
+        "choking": {
+          "title": "Choking Risk Assessment (medium)",
+          "actions": [
+            {"name": "Level 6 soft and bite-sized diet", "any": ["level 6/soft and bite"]},
+            {"name": "Normal fluids", "any": ["normal fluid/normal drink/thin fluid/level 0/usual fluid/usual drink"]},
+            {"name": "Sit fully upright for meals", "any": ["upright"]},
+            {"name": "Supervise and stop if she coughs", "any": ["stop/pause + cough", "supervis + cough"]},
+            {"name": "Time meals when her Parkinson's medicines are working", "any": ["medic/tablet + meal", "parkinson"]}
+          ],
+          "outcomes": [
+            {"name": "Eats safely in Level 6 texture without choking", "any": ["level 6/soft and bite/texture", "chok"]},
+            {"name": "No chest infection by review", "any": ["chest"]}
+          ],
+          "must_not": [{"name": "Normal diet, thickened fluids", "any": ["normal diet", "thicken"]}],
+          "sources": []
+        },
+        "must": {
+          "title": "MUST (low risk)",
+          "max_actions": 4,
+          "actions": [
+            {"name": "Weigh monthly", "any": ["weigh/weight + monthly/every month/once a month"]},
+            {"name": "Plate guard and adapted cutlery", "any": ["plate guard/adapted/cutlery"]},
+            {"name": "Rescreen MUST monthly", "any": ["must + monthly/rescreen/re-screen/repeat/each month/every month/score"]}
+          ],
+          "outcomes": [
+            {"name": "Weight stays stable", "any": ["weight + stable/steady/maintain/stays"]},
+            {"name": "Eats her meals with her adapted equipment", "any": ["plate guard/adapted/equipment/cutlery"]}
+          ],
+          "must_not": [{"name": "Fortified diet or dietitian referral", "any": ["fortif", "dietitian/dietician"]}],
+          "sources": ["food", "fluid"]
+        },
+        "waterlow": {
+          "title": "Waterlow",
+          "actions": [
+            {"name": "Daily skin check", "any": ["skin + check/inspect/look"]},
+            {"name": "Pressure-relieving cushion on her recliner", "any": ["cushion"]},
+            {"name": "Change position regularly", "any": ["reposition/turn", "change/move + position", "pressure relief"]},
+            {"name": "Good nutrition and fluids", "any": ["nutrition/diet/fluid/drink/food/meal"]}
+          ],
+          "outcomes": [
+            {"name": "Skin stays intact", "any": ["skin + intact/healthy/unbroken"]},
+            {"name": "Waterlow score the same or lower", "any": ["waterlow"]}
+          ],
+          "must_not": [],
+          "sources": []
+        }
+      }
+    }
+  }
+}
