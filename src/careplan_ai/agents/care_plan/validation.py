@@ -149,6 +149,49 @@ _STATUS_CLAUSE = re.compile(
     re.IGNORECASE,
 )
 _REASON = re.compile(_REASON_WORDS, re.IGNORECASE)
+# Bladder and Bowel retest 26/11 (Agnes): reasons the "as she is" check misses - the resident's
+# name ("check for wetness as Agnes is not aware of leakage") and the record as the reason
+# ("following the falls review that says she is no longer safe ..."). Sent back, not cut out.
+_MORE_REASONS = re.compile(
+    r"\bas\s+(?-i:[A-Z][a-z]+)\s+(?:is|was|has|had|no\s+longer|cannot|can't|does\s+not|doesn't"
+    r"|did\s+not|didn't|keeps|tends)\b"
+    r"|\bfollowing\s+(?:the\s+|her\s+|his\s+|their\s+)?(?:[\w-]+\s+){0,2}"
+    r"(?:review|assessment|advice|visit|note)\s+(?:that|which)\s+(?:says?|states?|shows?)\b",
+    re.IGNORECASE,
+)
+# A clause after a semicolon that only says how the resident is, or why ("; she has frequency,
+# cannot hold on ...", "; this supports her difficulty ...", "; she was upset when ..."): it starts
+# with the resident and has no instruction. "; she must not walk alone" and "; staff should ..."
+# are kept.
+_DESCRIPTION_START = re.compile(r"^\s*(?:she|he|they|this|that|it)\b", re.IGNORECASE)
+# Anything that may carry care keeps the clause ("; she needs one carer", "; she can be helped
+# with ...") - only a plain description is taken out.
+_DESCRIPTION_KEEP = re.compile(
+    r"\b(?:should|must|staff|carers?|nurse|needs?|requires?|can\s+be|to\s+be|will|help(?:ed)?"
+    r"|support(?:ed)?|assist(?:ed)?|offer(?:ed)?|use)\b",
+    re.IGNORECASE,
+)
+
+
+def strip_descriptions(text: str, resident_name: str | None) -> str:
+    """`text` without the clauses after its first semicolon that only describe the resident."""
+    first, *rest = text.split(";")
+    names = [n for n in re.findall(r"[A-Za-z][A-Za-z'’-]*", resident_name or "") if len(n) > 1]
+    kept = [first]
+    for clause in rest:
+        words = clause.strip()
+        starts_with_name = any(
+            re.match(rf"{re.escape(n)}(?:['’]s)?\b", words, re.IGNORECASE) for n in names
+        )
+        if (_DESCRIPTION_START.match(words) or starts_with_name) and not _DESCRIPTION_KEEP.search(
+            words
+        ):
+            continue
+        kept.append(clause)
+    if len(kept) == len(rest) + 1:
+        return text
+    out = ";".join(kept).rstrip(" ;,.") + "."
+    return out
 # The reason clause runs to the next comma, semicolon or full stop - a dot or comma inside a
 # number ("46.8 kg", "1,500 ml") is part of it.
 _REASON_CLAUSE = re.compile(
@@ -1036,6 +1079,23 @@ def validate_draft(
                 "told). Write only what staff do now; the status stays in the cited evidence."
             )
             text = re.sub(r"\s+([,.;])", r"\1", _STATUS_CLAUSE.sub("", text)).strip()
+
+        described = strip_descriptions(text, resident_name)
+        if described != text:
+            problems.append(
+                f"Action \"{text[:80]}\" adds, after a semicolon, how the resident is or why (\"; "
+                "she has ...\", \"; this supports ...\"). Write only what staff do; the reason "
+                "stays in the cited evidence."
+            )
+            text = described
+        if _MORE_REASONS.search(text) and not _REASON.search(text):
+            # Not cut out: the clause can run into the care ("as Agnes is not aware of leakage and
+            # change her pants when wet"); the agent is asked to write it without the reason.
+            problems.append(
+                f"Action \"{text[:80]}\" explains why (\"as {resident_name or 'the resident'} "
+                "is ...\", \"following the review that says ...\"). Keep the care and take the "
+                "reason out; the reason stays in the cited evidence."
+            )
 
         if _REACTIVE.search(text):
             # OPENCARE-98: "If Agnes says she feels light-headed, staff should..." waits for the
