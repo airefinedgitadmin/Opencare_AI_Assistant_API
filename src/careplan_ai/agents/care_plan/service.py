@@ -33,6 +33,7 @@ from careplan_ai.agents.care_plan.schemas import (
     VerdictOut,
     outcomes_to_write,
 )
+from careplan_ai.agents.care_plan.standards import choking_not_recorded
 from careplan_ai.agents.care_plan.validation import (
     UNSUPPORTED_NAME_WARNING,
     UNSUPPORTED_NUMBER_WARNING,
@@ -173,7 +174,12 @@ async def start_session(request: StartSessionRequest) -> SessionView:
         notices=_notices(request, evidence, drafted=True, ignored=len(dropped))
         + [coverage_notice(evidence, outcome.screened, outcome.omitted)]
         + [f"Not carried forward from an earlier care plan (paperwork, not care): \"{text}\""
-           for text in result.not_carried],
+           for text in result.not_carried]
+        + [f"Not carried forward from an earlier care plan (describes the resident, not care): "
+           f"\"{text}\"" for text in result.not_actions]
+        + result.not_covered
+        + [n for n in [choking_not_recorded(evidence, pathway=request.pathway,
+                                            resident_name=request.resident_name)] if n],
         risks=result.risks,
         patterns=outcome.patterns,
         not_used=result.not_used,
@@ -424,6 +430,10 @@ async def write_outcomes(
         return list(merged.values())
 
     drafts, verdicts = await attempt(cards, {}, {_normalise(t) for t in earlier}, earlier)
+    if not drafts:
+        # OPENCARE-119: nothing came back (or nothing passed the checks) - tried once more.
+        logger.info("care_plan_outcomes_empty_retry", session_id=session_id, actions=len(cards))
+        drafts, verdicts = await attempt(cards, {}, {_normalise(t) for t in earlier}, earlier)
     # An outcome the verifier rejects is rewritten once, with its reason.
     retry = {
         c.id: f"{drafts[c.id].text} - {verdicts[f'{c.id}.outcome'].reason}"
@@ -466,10 +476,17 @@ async def write_outcomes(
             outcome.confidence = confidence_for(outcome.evidence_ids, by_id, outcome.warnings)
         card.outcome = outcome
 
+    offered = sum(1 for c in cards if c.outcome is not None)
+    if not drafts:
+        # OPENCARE-119: still nothing written - the actions stay waiting for outcomes, so staff see
+        # "couldn't write outcomes" with Try again (which calls only this step, keeping the
+        # actions). An outcome the verifier rejected is a decision, not a failure: not reopened.
+        for card in cards:
+            card.outcome_attempted = False
     session.updated_at = utcnow()
     await get_session_store().save_session(session)
     logger.info("care_plan_outcomes_written", session_id=session_id, actions=len(cards),
-                offered=sum(1 for c in cards if c.outcome is not None))
+                offered=offered)
     return SessionView.of(session)
 
 

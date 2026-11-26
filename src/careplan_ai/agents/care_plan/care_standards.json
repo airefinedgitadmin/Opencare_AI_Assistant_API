@@ -1,0 +1,100 @@
+{
+  "_about": "Care standards (OPENCARE-99, OPENCARE-115, OPENCARE-116). Each step becomes a K item the draft must cover. {name} is the resident. Wording and bands from the tickets; awaiting clinical sign-off (Linda, Stobhill). Edit a copy and point CAREPLAN_AI_CARE_STANDARDS_FILE at it to change the wording without a release.",
+  "must": {
+    "pathway": "\\b(?:must\\b|malnutrition)",
+    "label": "MUST care standard - {band}",
+    "bands": [
+      {"name": "Low risk", "from": 0, "steps": [
+        "Weigh {name} monthly on the same scales.",
+        "Rescreen MUST monthly, or sooner if {name}'s weight drops."
+      ]},
+      {"name": "Medium risk", "from": 1, "steps": [
+        "Weigh {name} weekly on the same scales.",
+        "Record everything {name} eats and drinks on the Food and Fluid charts.",
+        "Rescreen MUST monthly, or sooner if {name}'s weight drops.",
+        "Tell the nurse or GP, and follow up any dietitian referral, if {name}'s weight keeps falling or {name} eats less than half of each meal for 3 days."
+      ]},
+      {"name": "High risk", "from": 2, "steps": [
+        "Refer {name} to the dietitian, or follow up the referral, and follow the advice given.",
+        "Weigh {name} weekly on the same scales.",
+        "Record everything {name} eats and drinks on the Food and Fluid charts.",
+        "Rescreen MUST monthly, or sooner if {name}'s weight drops.",
+        "Tell the nurse or GP if {name}'s weight keeps falling or {name} eats less than half of each meal for 3 days."
+      ]}
+    ]
+  },
+  "waterlow": {
+    "pathway": "\\b(?:waterlow|pressure\\s+(?:ulcer|area|sore|damage|care))",
+    "label": "Waterlow care standard - {band}",
+    "score_question": "\\b(?:waterlow|total|overall|final)\\b",
+    "bands": [
+      {"name": "At risk", "from": 10, "steps": [
+        "Check {name}'s skin every day, including the sacrum, heels, hips and elbows, and the ears if {name} is on oxygen.",
+        "Help {name} change position at least every 4 hours, day and night, including when sitting in a chair.",
+        "Keep {name}'s skin clean and dry.",
+        "Encourage {name} to eat and drink well."
+      ]},
+      {"name": "High risk", "from": 15, "steps": [
+        "Check {name}'s skin every day, including the sacrum, heels, hips and elbows, and the ears if {name} is on oxygen.",
+        "Help {name} change position every 2 to 3 hours, day and night, including when sitting in a chair, and record each change.",
+        "Use a pressure-relieving mattress on {name}'s bed and a pressure-relieving cushion on {name}'s chair.",
+        "Keep {name}'s skin clean and dry.",
+        "Encourage {name} to eat and drink well."
+      ]},
+      {"name": "Very high risk", "from": 20, "steps": [
+        "Check {name}'s skin every day, including the sacrum, heels, hips and elbows, and the ears if {name} is on oxygen.",
+        "Help {name} change position every 2 hours, day and night, including when sitting in a chair, and record each change.",
+        "Use a specialist pressure-relieving mattress on {name}'s bed and a pressure-relieving cushion on {name}'s chair.",
+        "Refer {name} to the tissue viability nurse, or follow up the referral, and follow the advice given.",
+        "Keep {name}'s skin clean and dry.",
+        "Encourage {name} to eat and drink well."
+      ]}
+    ]
+  },
+  "choking": {
+    "pathway": "\\b(?:chok\\w*|swallow\\w*|dysphagia)\\b",
+    "label": "Choking care standard - {band}",
+    "modified": {
+      "name": "{diet}",
+      "diet_step": "Give {name} food only at {diet}.",
+      "fluid_step": "Give {name} drinks only at {fluids}.",
+      "steps": [
+        "Sit {name} fully upright for every meal, snack and drink.",
+        "Supervise {name} while eating and drinking, as the records state.",
+        "Stop if {name} coughs or {name}'s voice sounds wet while eating or drinking, and tell the nurse.",
+        "Do not give {name} food or drink while drowsy."
+      ]
+    },
+    "low": {
+      "name": "Low risk",
+      "steps": [
+        "Remind {name} to eat slowly and take small mouthfuls.",
+        "Sit {name} upright for meals."
+      ]
+    },
+    "not_recorded": "Diet level not recorded: no IDDSI diet or fluid level was found in {name}'s records, so Open Care Buddy did not add one. Check the latest SLT advice."
+  },
+  "fluid": {
+    "label": "Fluid care standard",
+    "pathway": "\\b(?:must\\b|malnutrition|bladder|bowel|continence)",
+    "step": "Offer {name} a drink every 1-2 hours while awake to reach {target} a day, and record each drink on the {chart}.",
+    "only_below_target": true
+  },
+  "tpr": {
+    "label": "TPR & BP care standard - {finding}",
+    "chart": "OF_TPR",
+    "fever": {
+      "pathway": "\\b(?:fall\\w*|chok\\w*|swallow\\w*|dysphagia|bladder|bowel|continence|waterlow|pressure)",
+      "from_celsius": 37.8,
+      "finding": "temperature {value} °C",
+      "confusion_finding": "new confusion",
+      "step": "Watch {name}'s temperature and chest, and tell the nurse if {name} has a temperature of {threshold} °C or more, a chesty cough, or new or sudden confusion."
+    },
+    "postural_drop": {
+      "pathway": "\\bfall\\w*",
+      "systolic_drop": 20,
+      "finding": "lower blood pressure on standing",
+      "step": "Help {name} sit for a moment before standing, and check {name}'s lying and standing blood pressure."
+    }
+  }
+}

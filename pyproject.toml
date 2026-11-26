@@ -46,6 +46,8 @@ where = ["src"]
 # Open Care Buddy's prompt wording ships as files next to its code (careplan_ai/buddy/prompts).
 [tool.setuptools.package-data]
 "careplan_ai.buddy" = ["prompts/*.md"]
+# Care standard wording (OPENCARE-115).
+"careplan_ai.agents.care_plan" = ["care_standards.json"]
 
 [tool.ruff]
 line-length = 100

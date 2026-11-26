@@ -13,7 +13,6 @@ from careplan_ai.agents.care_plan.schemas import (
 from careplan_ai.agents.care_plan.validation import (
     _REACTIVE,
     _REASON,
-    UNADDRESSED_RISK_WARNING,
     describes_recording,
     overlapping_actions,
     repeats_outcome,
@@ -63,8 +62,9 @@ def test_a_flagged_answer_the_model_skipped_is_a_risk_and_shown_as_not_covered()
         resident_name="Agnes", pathway="Falls Assessment",
     )
     assert {r.evidence_id for r in result.risks} == {"A1", "A2"}
-    uncovered = [c for c in result.cards if c.evidence_ids == ["A2"]]
-    assert len(uncovered) == 1 and uncovered[0].warnings == [UNADDRESSED_RISK_WARNING]
+    # OPENCARE-114: not pasted in as an action - it stays a risk no card covers ("Not covered").
+    assert not [c for c in result.cards if "A2" in c.evidence_ids]
+    assert not any("A2" in c.risk_evidence_ids for c in result.cards)
     assert any("[A2]" in p for p in result.problems)
 
 

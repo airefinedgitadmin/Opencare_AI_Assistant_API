@@ -172,7 +172,9 @@ def test_the_reported_draft_is_caught_on_every_point() -> None:
     # Neither the MUST standard nor the Food chart was acted on: both come back to staff.
     uncovered = {c.evidence_ids[0] for c in result.cards if c.verification == "source_text"}
     assert set(K.values()) - {K["Offer:Agnes"]} <= uncovered
-    assert any(i in uncovered for i in FOOD)
+    # OPENCARE-114: the Food chart line is listed for staff, never pasted in as an action.
+    assert not any(i in uncovered for i in FOOD)
+    assert any("Food" in line for line in result.not_covered)
     # Staff are offered the care without the reason or the status.
     first = result.cards[0].text
     assert first == "Staff should offer Agnes small portions with sweet options."

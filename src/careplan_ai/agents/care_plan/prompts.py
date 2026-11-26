@@ -35,9 +35,10 @@ You are given EVIDENCE: numbered items from this resident's own records -
   H = this resident's earlier care plans (archived, or for other pathways)
   V = observation chart entries (fluid, food, TPR, falls diary, ...), one per entry
   T = one chart's summary line, computed from all its entries
-  K = a care standard step: the routine care the recorded score calls for \
-(e.g. the steps for the MUST band in the assessment), or how often to offer \
-drinks for a chart's daily fluid target
+  K = a care standard step: the routine care the recorded score, level or \
+reading calls for (the steps for the MUST or Waterlow band in the assessment, \
+the IDDSI diet and fluid levels in the notes, a TPR & BP reading), or how \
+often to offer drinks when intake is below a chart's daily fluid target
 A note marked "resident record" was not written against this pathway; an \
 observation marked "resident record" is from a chart not linked to it. Items \
 marked "history" are from before the current period: use them to understand \
@@ -63,7 +64,12 @@ cited by at least one action.
 as an action for the resident, citing the K item AND the A, V or T items it \
 responds to (e.g. the MUST score answer, the Food chart). Keep its frequency \
 and its trigger exactly ("weekly", "every 1-2 hours", "less than half of each \
-meal for 3 days"); add nothing a K item does not say.
+meal for 3 days"); add nothing a K item does not say. You may add the \
+resident's own detail the evidence gives (e.g. "in his wheelchair" when a note \
+says he sits in his wheelchair in the afternoons).
+- Where the diet or fluids are at an IDDSI level, every food or drink action \
+names that level (e.g. "Offer Rab Level 2 mildly thick drinks every 1-2 \
+hours"); never write a drinks action without it.
 - Every chart linked to this pathway (V or T, not "supporting") with entries \
 needs an action that cites it - e.g. a Food chart showing how much of each \
 meal was eaten needs a food action that cites it.
@@ -96,9 +102,26 @@ paperwork about the records ("document that a dentist appointment has been \
 requested", "document that she was weighed and file it with the chart"): write \
 the care it leads to, or leave it out. Recording on a chart IS care when the \
 evidence asks for it ("record every drink on the Fluid chart").
+- An action is an INSTRUCTION for staff, never form or chart text: no \
+assessment question or answer ("Is the Resident oriented ...?: Yes", "Eats \
+rapidly: Yes"), no form field ("Sex: F", "Age: 81+", "Special Risks"), no \
+score ("in response to a MUST Score 1", "his overall score is 3"), no chart \
+field or line ("record type", "2 entries on 16/11/2026", "24/11/2026 15:33 \
+· Observation: ..."), and never a note copied word for word. Start each \
+action with "Staff should" or a verb. Scores, answers and readings stay in \
+the cited evidence, which staff see under View.
 - P and H items are evidence of what was planned before, not wording to copy. \
 Where an earlier plan's line gives a reason, is paperwork or breaks any other \
-rule here, write the care it describes by these rules instead.
+rule here, write the care it describes by these rules instead. Write a P item \
+you keep as a new instruction ("Staff should ..."), never word for word.
+- Check every P item against the CURRENT scores, levels and notes, not only \
+against notes that contradict it in words. A P item the new score or diet \
+level makes wrong is not_used, citing the item that shows it: e.g. "cut up \
+his meat", "normal diet" or "thin fluids" once the diet is IDDSI Level 3, 4 \
+or 5 or fluids are thickened; "weigh monthly" once the MUST score is 1 or \
+more. Never write a not_used P item's words into an action.
+- A P item that only says how the resident is ("his skin is intact", "she \
+walks independently") is not an action. Never write it as one.
 - An action about equipment says how staff use it, not its status ("place the \
 sensor mat by Cathy's bed at night and respond as soon as it alerts", not \
 "arrange a sensor mat as requested"), using only details the evidence gives.
@@ -131,7 +154,9 @@ TASKS
 support, give its id and a short reason using the answer's own words. Answers \
 showing no problem are not risks. Every answer marked [FLAGGED RISK] is a \
 risk: list it here and cover it with an action (e.g. a medicines answer \
-needs a medicines action, a footwear answer a footwear action).
+needs a medicines action, a footwear answer a footwear action). An answer \
+marked [NOT A RISK] is never a risk (being oriented, equipment in place, a \
+comment box): don't list it and don't write an action just to cover it.
 2. note_classes: classify EVERY note item (R, C, N, G, F - not V) as \
 new_requirement, update, status or not_relevant (to this pathway).
 3. not_used: a P item belongs here ONLY if a current (not "history") note item \
@@ -365,7 +390,8 @@ def format_evidence_line(item: EvidenceItem) -> str:
     details = [item.date] if item.date else []
     if item.source_type == SourceType.ASSESSMENT:
         when = f" ({details[0]})" if details else ""
-        flag = " [FLAGGED RISK]" if item.risk_flagged else ""
+        flag = (" [FLAGGED RISK]" if item.risk_flagged
+                else " [NOT A RISK]" if item.risk_rule in ("no_risk", "info") else "")
         return f"[{item.id}] Assessment{when}{flag} - Q: {item.label} | A: {item.text}"
     name = _source_name(item)
     on_record = item.is_note or item.is_observation or item.is_chart_summary

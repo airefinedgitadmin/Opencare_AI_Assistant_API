@@ -7,8 +7,11 @@ rather than by asking another model.
    evidence is dropped - it can't be traced to a source, so it can't be shown.
 2. Completeness: every flagged risk, every previous care plan action that no
    note supersedes, and every note requirement must be covered by at least
-   one action. Anything left uncovered is added back as its own card using the
-   source's own words - no model involved.
+   one action. An uncovered earlier care plan line or care standard step is
+   added back as its own card using the source's own words - no model
+   involved. An uncovered flagged answer, note or chart line is never pasted
+   in as an action (OPENCARE-114): the answer stays a risk staff see as "Not
+   covered", and the record is listed in a notice.
 3. Nothing removed when combining: words of a required source that the action
    citing it doesn't carry are listed on the card (possibly_missing).
 4. Unsupported details: a figure, or a name / proper noun, in a suggestion
@@ -24,6 +27,7 @@ that is the feedback the care plan agent revises its draft from.
 
 import re
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 from careplan_ai.agents.care_plan.schemas import (
     ActionCard,
@@ -39,6 +43,8 @@ from careplan_ai.agents.care_plan.schemas import (
     SourceType,
     Suggestion,
 )
+from careplan_ai.agents.care_plan.standards import thickened_level
+from careplan_ai.agents.care_plan.superseded import describes_state, rule_not_used, state_lines
 
 _NUMBER = re.compile(r"\d+(?:[.:/]\d+)*")
 _WORD = re.compile(r"[A-Za-z][A-Za-z'’-]*")
@@ -121,6 +127,111 @@ _REASON = re.compile(_REASON_WORDS, re.IGNORECASE)
 _REASON_CLAUSE = re.compile(
     r"(,\s*)?" + _REASON_WORDS + r"(?:[^,.;]|[.,](?=\d))*(,)?", re.IGNORECASE
 )
+
+
+# OPENCARE-114: a line that is not an instruction for staff but form or chart text - a question
+# with its answer ("Is the Resident oriented to their new environment?: Yes", "...; normal bowel
+# habit: No; ..."), a form field ("Sex: F", "Age: 81+", "Special Risks - Medicines: 2", "sex (M)
+# and age (81+)"), a score or chart field tacked on ("in response to a MUST Score 1 - Medium risk",
+# "His overall score is 3.", "a Monthly record type") or a chart line ("24/11/2026 15:33 ·
+# Observation: Found Awake", "2 entries on 16/11/2026").
+_FORM_LINE = re.compile(
+    r"\?\s*:"
+    r"|:\s*(?:yes|no)\b\s*(?:[.;,]|$)"
+    r"|^\s*(?:sex|age|gender|total\s+score|score|risk\s+level)\s*:"
+    r"|\bspecial\s+risks?\b"
+    r"|\bsex\s*\(\s*[mf]\s*\)|\bage\s*\(\s*\d+\s*\+?\s*\)|\b(?:is|are)\s+[MF]\s+and\s+\d+\s*\+"
+    r"|^\s*\d{1,2}/\d{1,2}/\d{2,4}\b"
+    r"|\b\d+\s+entr(?:y|ies)\s+on\b"
+    r"|\bin\s+response\s+to\s+(?:a\s+|an\s+|the\s+|his\s+|her\s+|their\s+)?[\w-]+\s+score\b"
+    r"|\boverall\s+score\s+(?:is|was|of)\b"
+    r"|\brecord\s+type\b",
+    re.IGNORECASE,
+)
+# OPENCARE-115: an action about drinks ("Offer Rab a drink every 1-2 hours"), which in a Choking
+# plan with thickened fluids must name the level.
+_DRINK = re.compile(r"\b(?:drinks?|fluids?|cups?\s+of|sips?)\b", re.IGNORECASE)
+# OPENCARE-114: an action that is a note or chart entry copied (nearly) word for word ("Nell eats
+# quickly and sometimes needs a reminder to slow down ...") is a record, not an instruction. Only a
+# record that is not itself written as an instruction counts: a review note that says "Staff
+# should reposition Willie every 2 hours" is care, and an action using it is right.
+COPIED_RECORD_OVERLAP = 0.8
+_INSTRUCTION_WORDS = re.compile(
+    r"\b(?:staff|should|must|please|ensure|encourage|offer|assist|support|remind|check)\b",
+    re.IGNORECASE,
+)
+
+
+def not_an_instruction(text: str, records: list[EvidenceItem]) -> str | None:
+    """Why `text` is form or record text rather than an instruction for staff, or None.
+    `records` are the notes and chart lines the model was shown."""
+    if _FORM_LINE.search(text):
+        return (
+            "is an assessment question, form field, score or chart line, not an instruction"
+        )
+    plain = _plain(text)
+    for record in records:
+        if _INSTRUCTION_WORDS.search(record.text):
+            continue
+        # The same text, not the same subject: "Staff should give full help with denture
+        # cleaning." is care written from "Denture cleaning now needs full help.", not a copy.
+        if SequenceMatcher(None, plain, _plain(record.text)).ratio() > COPIED_RECORD_OVERLAP:
+            return f"copies [{record.id}] word for word instead of saying what staff do"
+    return None
+
+
+def _plain(text: str) -> str:
+    return " ".join(_WORD.findall(text.casefold()))
+
+
+def _shares_phrase(action: str, line: str) -> bool:
+    """OPENCARE-113: the action carries three words in a row of `line` with two content words
+    among them ("walks independently with" her walker), word endings aside."""
+    action_stems = [_stem(w) for w in _WORD.findall(action)]
+    line_stems = [_stem(w) for w in _WORD.findall(line)]
+    for i in range(len(line_stems) - 2):
+        window = line_stems[i:i + 3]
+        if sum(is_content_stem(s) for s in window) < 2:
+            continue
+        for j in range(len(action_stems) - 2):
+            if action_stems[j:j + 3] == window:
+                return True
+    return False
+
+
+def _repeats_not_used(
+    text: str,
+    not_used: list[NotUsedItem],
+    by_id: dict[str, EvidenceItem],
+    forbidden: dict[str, "re.Pattern[str]"],
+    resident_name: str | None = None,
+) -> NotUsedItem | None:
+    """OPENCARE-113: the not-used line an action repeats - its words mostly (over 60%), a phrase
+    of it, or (for a code rule) the very thing the rule rules out ("cutting up his meat")."""
+    names = stems([resident_name or ""])
+    action_words = content_stems([text]) - names
+    for item in not_used:
+        line = by_id.get(item.evidence_id)
+        if line is None:
+            continue
+        pattern = forbidden.get(item.evidence_id)
+        if pattern is not None and pattern.search(text):
+            return item
+        # An action that keeps the line's words but changes its figure ("change position every
+        # 2 hours" for "... every 4 hours") is the new care, not the old line repeated.
+        figures = set(_NUMBER.findall(line.text))
+        if figures and not figures <= set(_NUMBER.findall(text)):
+            continue
+        if _shares_phrase(text, line.text):
+            return item
+        # Overlap only means something for a line with a few content words of its own: "Cathy is
+        # independent with her oral care" shares "oral" with any oral care action.
+        line_words = content_stems([line.text]) - names
+        union = line_words | action_words
+        if (len(line_words) >= _MIN_CONTAINED_WORDS - 1 and union
+                and len(line_words & action_words) / len(union) > SAME_NEED_OVERLAP):
+            return item
+    return None
 
 
 # OPENCARE-98: an action that waits for the problem ("If Agnes says she feels light-headed when
@@ -350,6 +461,11 @@ class ValidationResult:
     patterns: list[Pattern] = field(default_factory=list)
     # Every problem in plain words, for the care plan agent to fix on revision.
     problems: list[str] = field(default_factory=list)
+    # OPENCARE-114: records (notes, chart lines) no action covers - shown to staff as notices,
+    # never pasted in as actions. Uncovered flagged answers stay in `risks` ("Not covered").
+    not_covered: list[str] = field(default_factory=list)
+    # OPENCARE-113: earlier care plan lines that describe the resident, not care - listed for staff.
+    not_actions: list[str] = field(default_factory=list)
     # Earlier care plan lines that are only paperwork: not carried into the plan - staff are told.
     not_carried: list[str] = field(default_factory=list)
 
@@ -552,6 +668,12 @@ def validate_draft(
     risks: list[RiskFlag] = []
     risk_seen: set[str] = set()
     for risk in draft.risks:
+        rule = by_id[risk.evidence_id].risk_rule if risk.evidence_id in by_id else None
+        if rule in ("no_risk", "info"):
+            # OPENCARE-118: the question's rule says this answer is not a risk ("Oriented: Yes",
+            # "Hand Rails: Yes", a comment box) - not counted, so no filler action is asked for.
+            risk_seen.add(risk.evidence_id)
+            continue
         if is_kind(risk.evidence_id, SourceType.ASSESSMENT, "A") and risk.evidence_id not in {
             r.evidence_id for r in risks
         }:
@@ -593,11 +715,24 @@ def validate_draft(
                 )
         else:
             bad_ref("not_used", f"{item.evidence_id} superseded by {item.superseded_by}")
+    # OPENCARE-113: lines the current score or diet level makes wrong are not used, whatever the
+    # model said - decided in code from the records (superseded.py).
+    rules = rule_not_used(evidence, pathway=pathway, resident_name=resident_name)
+    forbidden = {r.evidence_id: r.forbidden for r in rules if r.forbidden is not None}
+    for rule in rules:
+        if rule.evidence_id not in {n.evidence_id for n in not_used}:
+            not_used.append(NotUsedItem(evidence_id=rule.evidence_id,
+                                        superseded_by=rule.superseded_by, reason=rule.reason))
     superseded = {n.evidence_id for n in not_used}
+    # OPENCARE-113: an earlier line that only describes the resident is not care - never required
+    # as an action, and listed for staff.
+    states = state_lines(evidence, resident_name) - superseded
 
     # --- carried over as written: current previous care plan items only ---
     carried: set[str] = set()
     for ref in _dedupe(draft.carry_over):
+        if ref in states:
+            continue  # OPENCARE-113: listed for staff, never shown as an action
         if is_kind(ref, SourceType.PREVIOUS_CARE_PLAN, "P") and ref not in superseded:
             carried.add(ref)
         else:
@@ -606,9 +741,14 @@ def validate_draft(
     # --- what must be covered ---
     required: set[str] = set(risk_ids)
     not_carried: list[str] = []
+    not_actions: list[str] = []
     for source in evidence:
         if source.source_type == SourceType.PREVIOUS_CARE_PLAN and source.id.startswith("P"):
             if source.id in superseded:
+                continue
+            if source.id in states:
+                if source.text not in not_actions:
+                    not_actions.append(source.text)
                 continue
             if paperwork_only(source.text):
                 # Paperwork is not care (OPENCARE-78): not carried forward word for word.
@@ -631,11 +771,24 @@ def validate_draft(
     source_stems = stems(all_sources)
     example_stems = stems(examples or [])
 
+    # OPENCARE-115: in a Choking plan with thickened fluids, the words every drink action carries.
+    thick = thickened_level(evidence, pathway)
+    # OPENCARE-114: notes and chart lines - an action must not be one of them copied.
+    records = [
+        e for e in evidence
+        if e.is_note or e.source_type in (SourceType.OBSERVATION, SourceType.OBSERVATION_SUMMARY)
+    ]
     cards: list[ActionCard] = []
     dropped = copied = unsupported_count = missing_count = 0
     for index, action in enumerate(draft.actions):
         cited = _dedupe(action.evidence_ids)
         ids = [i for i in cited if i in by_id and i not in superseded]
+        # OPENCARE-115/116: a care standard step brings the score, level or reading it answers,
+        # so staff see it under Sources ("TPR & BP 17/11/2026: standing 108/64").
+        for ref in list(ids):
+            backing = by_id[ref].backed_by
+            if backing and backing in by_id and backing not in ids:
+                ids.append(backing)
         text = action.text.strip()
         for ref in cited:
             if ref not in ids:
@@ -676,6 +829,36 @@ def validate_draft(
                 f"Action \"{text[:80]}\" says only that equipment is arranged, and was dropped. "
                 "Say how staff use the equipment for the resident, using only details the "
                 "evidence gives."
+            )
+            continue
+        if thick and _DRINK.search(text) and thick not in text.casefold():
+            dropped += 1
+            problems.append(
+                f"Action \"{text[:80]}\" is about drinks but does not say they are {thick} "
+                f"(the level in the records), and was dropped. Every drink action must name the "
+                "level."
+            )
+            continue
+        repeated = _repeats_not_used(text, not_used, by_id, forbidden, resident_name)
+        if repeated is not None:
+            dropped += 1
+            problems.append(
+                f"Action \"{text[:80]}\" repeats [{repeated.evidence_id}], which no longer applies "
+                f"({repeated.reason}), and was dropped. Write only the care that applies now, "
+                "without that earlier wording."
+            )
+            continue
+        not_instruction = not_an_instruction(text, records)
+        if not_instruction is None and describes_state(text, resident_name):
+            # OPENCARE-113: "Willie's skin is intact." says how he is, not what staff do.
+            not_instruction = "describes the resident, not what staff do"
+        if not_instruction:
+            dropped += 1
+            problems.append(
+                f"Action \"{text[:80]}\" {not_instruction}, and was dropped. Rewrite it as one "
+                "instruction for staff (what to do, and how often if the evidence says), in plain "
+                "English. No questions, answers, scores, reasons or chart readings; they stay in "
+                "the cited evidence."
             )
             continue
         borrowed = borrowed_terms(text, source_stems=source_stems, example_stems=example_stems)
@@ -761,7 +944,7 @@ def validate_draft(
             )
 
         missing = missing_details(
-            text, [by_id[i] for i in ids], check_ids=required, ignore=ignore_stems
+            text, [by_id[i] for i in ids], check_ids=required | states, ignore=ignore_stems
         )
         missing_count += len(missing)
         problems += [
@@ -794,6 +977,7 @@ def validate_draft(
     # --- 2. completeness: nothing missed, nothing skipped ---
     covered = {i for card in cards for i in card.evidence_ids}
     backfilled = 0
+    not_covered: list[str] = []
     # The same line from more than one earlier care plan is shown once, citing each of them.
     # Only earlier plan lines: other records with the same words ("Yes" to two questions) are
     # different needs.
@@ -833,8 +1017,15 @@ def validate_draft(
         problems.append(
             f"[{source.id}] must be covered by an action but no action cites it: {source.text}"
         )
-        is_risk = source.id in risk_ids
-        text = f"{source.label}: {source.text}" if is_risk else source.text
+        if source.id in risk_ids:
+            # OPENCARE-114: a flagged answer no action covers is never pasted in as an action
+            # ("Sex: F", "...?: Yes"); it stays in the risks, so staff see it under "Not covered".
+            continue
+        if source.is_note:
+            # OPENCARE-114: nor is a note - it is listed for staff to check instead.
+            not_covered.append(_not_covered_line(source))
+            continue
+        text = source.text
         cards.append(
             ActionCard(
                 id="",
@@ -842,8 +1033,6 @@ def validate_draft(
                 text=text,
                 original_text=text,
                 evidence_ids=[source.id],
-                risk_evidence_ids=[source.id] if is_risk else [],
-                warnings=[UNADDRESSED_RISK_WARNING] if is_risk else [],
                 confidence=Confidence.MEDIUM,
                 verification="source_text",
             )
@@ -857,24 +1046,16 @@ def validate_draft(
     # OPENCARE-99: so must each current chart linked to this pathway (its summary line, else its
     # newest entry, is shown) - the Food chart of a MUST plan was read but never acted on.
     for group in [*(required_groups or []), *linked_charts(evidence)]:
-        first = by_id.get(group[0])
-        if first is None or group[0] in required or any(i in covered for i in group):
+        head = by_id.get(group[0])
+        if head is None or group[0] in required or any(i in covered for i in group):
             continue
         backfilled += 1
         problems.append(
-            f"[{first.id}] raises a need for this pathway but no action cites it: {first.text}"
+            f"[{head.id}] raises a need for this pathway but no action cites it: {head.text}"
         )
-        cards.append(
-            ActionCard(
-                id="",
-                origin=CardOrigin.SOURCE_TEXT,
-                text=first.text,
-                original_text=first.text,
-                evidence_ids=[first.id],
-                confidence=Confidence.MEDIUM,
-                verification="source_text",
-            )
-        )
+        # OPENCARE-114: a chart line or record ("2 entries on 16/11/2026 ...") is never pasted in
+        # as an action; it is listed for staff to check instead.
+        not_covered.append(_not_covered_line(head))
 
     for index, card in enumerate(cards, start=1):
         card.id = f"S{index}"
@@ -892,4 +1073,15 @@ def validate_draft(
         patterns=validate_patterns(draft.patterns, evidence, resident_name=resident_name),
         problems=problems,
         not_carried=not_carried,
+        not_covered=not_covered,
+        not_actions=not_actions,
+    )
+
+
+def _not_covered_line(source: EvidenceItem) -> str:
+    """OPENCARE-114: a record no action covers, for staff to check - never an action itself."""
+    label = f"{source.label}: " if source.label and source.label != source.text else ""
+    return (
+        "Open Care Buddy did not write an action for this record. Check it and add one if "
+        f"it is needed: \"{label}{source.text}\""
     )

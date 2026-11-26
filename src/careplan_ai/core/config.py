@@ -173,6 +173,11 @@ class Settings(BaseSettings):
     # in-memory storage uses a throwaway key when unset.
     agent_state_key: SecretStr | None = None
 
+    # Care standards (OPENCARE-99/115/116): the MUST, Waterlow, Choking, Fluid and TPR & BP steps.
+    # Unset = careplan_ai/agents/care_plan/care_standards.json; a path to an edited copy changes
+    # the clinical wording without a release.
+    care_standards_file: str | None = None
+
     # --- Open Care Buddy chat (OPENCARE-102): /buddy/chat ---
     # Its own deployment if set; unset = the care plan agent's primary deployment above, so
     # no new model account is needed. Model ids must exist in core/model_config.py.

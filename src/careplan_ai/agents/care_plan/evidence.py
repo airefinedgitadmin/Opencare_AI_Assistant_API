@@ -187,6 +187,7 @@ def build_evidence(
                     date=request.assessment.completed_date,
                     text=answer.answer.strip(),
                     risk_flagged=answer.risk_flagged,
+                    risk_rule=answer.risk_rule,
                 )
             )
 
@@ -322,14 +323,37 @@ def build_evidence(
         )
 
     items += chart_summaries(recorded)
-    # OPENCARE-99: the care the recorded MUST band (or a daily fluid target) calls for - K items.
+    # OPENCARE-99/115/116: the care the recorded score, level or reading calls for - K items.
     return items + care_standards(
         items,
         pathway=request.pathway,
         resident_name=request.resident_name,
         chart_types=chart_types,
         chart_fields=chart_fields,
+        below_target=below_target(recorded),
     )
+
+
+def below_target(entries: list[ObservationIn]) -> set[str]:
+    """OPENCARE-116: current charts whose latest chart day adds up to less than their daily
+    target - the amounts as recorded, added up per day as the chart summary does."""
+    low: set[str] = set()
+    for (name, historical), group in _charts(entries).items():
+        if historical:
+            continue
+        target = _chart_target(group)
+        if target is None:
+            continue
+        _field, amount, unit = target
+        per_day: dict[tuple[int, int, int], float] = {}
+        for entry in group:
+            day = _entry_sort_key(entry)[0]
+            fields = dict(_fields(entry))
+            for field in _counted_fields(entry, unit):
+                per_day[day] = per_day.get(day, 0.0) + float(fields[field])
+        if per_day and per_day[max(per_day)] < amount:
+            low.add(name)
+    return low
 
 
 def _chart_name(entry: ObservationIn) -> str:
