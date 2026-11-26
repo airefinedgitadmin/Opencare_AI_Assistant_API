@@ -60,7 +60,7 @@
       "fluid_step": "Give {name} drinks only at {fluids}.",
       "steps": [
         "Sit {name} fully upright for every meal, snack and drink.",
-        "Supervise {name} while eating and drinking, as the records state.",
+        "Supervise {name} while eating and drinking.",
         "Stop if {name} coughs or {name}'s voice sounds wet while eating or drinking, and tell the nurse.",
         "Do not give {name} food or drink while drowsy."
       ]
