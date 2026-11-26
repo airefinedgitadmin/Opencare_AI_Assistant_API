@@ -56,7 +56,7 @@
           "actions": [
             {"name": "Prompt toileting regularly and before bed", "any": ["toilet + regular/every/hour/before bed/bedtime/routine/schedule"]},
             {"name": "Walk with her to the toilet", "any": ["walk/accompany/take/go + toilet/bathroom"]},
-            {"name": "Night light and clear signage", "any": ["night light/nightlight/sign"]},
+            {"name": "Night light and clear signage", "any": ["night light/nightlight/signage/sign on/picture sign/toilet sign/bathroom sign"]},
             {"name": "Pull-up pants changed promptly", "any": ["pull-up/pull up/pad/pants/continence product"]},
             {"name": "Encourage fluids and fibre", "any": ["fibre/fiber"]},
             {"name": "Record bowels", "any": ["bowel + record/chart/monitor/diary/note"]},
@@ -199,7 +199,7 @@
           "title": "Bladder and Bowel Assessment",
           "actions": [
             {"name": "Offer the toilet regularly and when restless", "any": ["toilet + regular/restless/every/hour/routine"]},
-            {"name": "Picture sign on the door", "any": ["picture/sign"]},
+            {"name": "Picture sign on the door", "any": ["picture/signage/sign on/toilet sign/bathroom sign"]},
             {"name": "All-in-one pads changed promptly, skin care", "any": ["pad/all-in-one/continence product"]},
             {"name": "Help with hygiene", "any": ["hygiene/wash/underwear/clean"]},
             {"name": "Encourage drinks to 1500 ml", "any": ["1500/1,500/1.5 litre/1.5l"]},
