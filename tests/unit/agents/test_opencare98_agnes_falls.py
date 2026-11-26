@@ -124,9 +124,9 @@ def test_the_reported_draft_is_caught_on_every_point() -> None:
     )
     assert {"reason", "reactive", "same need", "uncovered"} <= _kinds(result.problems)
     # Medicines, vision, footwear, continence and cognition had no action: shown as not covered.
-    not_covered = {
-        c.evidence_ids[0] for c in result.cards if UNADDRESSED_RISK_WARNING in c.warnings
-    }
+    # OPENCARE-114: a risk no card covers - never pasted in as an action.
+    covered_risks = {i for c in result.cards for i in c.risk_evidence_ids}
+    not_covered = {r.evidence_id for r in result.risks} - covered_risks
     assert {a("meds"), a("vision"), a("footwear"), a("continence"), a("cognition")} <= not_covered
     # The reasons were taken out of what staff are offered.
     assert not any(re.search(r"\b(as she|noting|because|since)\b", c.text) for c in result.cards)

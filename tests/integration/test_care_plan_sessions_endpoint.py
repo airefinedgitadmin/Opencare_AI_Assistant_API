@@ -357,11 +357,13 @@ def test_verifier_rejection_goes_back_once_then_the_statement_is_replaced_by_its
     assert session["generation"]["revisions"] == 2
     assert session["generation"]["rejectedCount"] == 1
     cards = session["cards"]
-    # S2 is gone; the required sources it covered come back word for word.
+    # S2 is gone; the earlier care plan line it covered comes back word for word. OPENCARE-114:
+    # the flagged answer (A2) and the review note (R1) are never pasted in as actions - A2 stays a
+    # risk ("Not covered") and R1 is listed in a notice.
     assert ACTION_2.text not in [c["text"] for c in cards]
-    assert [c["evidenceIds"] for c in cards if c["origin"] == "source_text"] == [
-        ["A2"], ["P2"], ["R1"]
-    ]
+    assert [c["evidenceIds"] for c in cards if c["origin"] == "source_text"] == [["P2"]]
+    assert "A2" in {r["evidenceId"] for r in session["risks"]}
+    assert any("did not write an action for this record" in n for n in session["notices"])
     assert all(c["verification"] == "source_text" for c in cards if c["origin"] == "source_text")
     # The overstated action stays, flagged and low confidence.
     assert cards[0]["verification"] == "overstated"
@@ -593,11 +595,11 @@ def test_a_need_found_by_a_reader_must_be_covered_or_is_shown_word_for_word(
     kinds = {s["evidenceId"]: s["kind"] for s in session["screened"]}
     assert kinds == {"C1": "new_requirement", "C2": "new_requirement",
                      "C3": "new_requirement", "C4": "new_requirement"}
-    # The care plan agent got the record, and no action cited it: shown word for word.
+    # The care plan agent got the record, and no action cited it. OPENCARE-114: a note is never
+    # pasted in as an action - it is listed for staff to check.
     assert {"C1", "C2", "C3", "C4"} <= set(fake_models["draft"][0]["evidence"])
-    backfilled = [c for c in session["cards"] if c["origin"] == "source_text"]
-    assert [c["evidenceIds"] for c in backfilled] == [["C1"]]
-    assert backfilled[0]["text"] == "Cathy enjoyed the music session."
+    assert not [c for c in session["cards"] if c["origin"] == "source_text"]
+    assert any("Cathy enjoyed the music session." in n for n in session["notices"])
 
 
 def test_records_no_reader_could_read_are_reported_not_dropped(
@@ -772,6 +774,9 @@ def test_every_record_is_used_and_unanswered_questions_are_listed(
         "Not answered in Bedroom Fire Risk Assessment (BFRA): Does the resident smoke?; "
         "Are there electrical heaters in the room?.",
         "The AI read the one record.",
+        # OPENCARE-114: the note no action covered is listed, not pasted in as an action.
+        "Open Care Buddy did not write an action for this record. Check it and add one if it is "
+        'needed: "Nursing note: Cathy smokes in the garden."',
     ]
     # Everything fitted the pack, so no reader agent was needed.
     assert fake_models["read"] == []
@@ -829,3 +834,27 @@ def test_revisions_use_the_fallback_model_when_configured(
     assert roles == ["primary", "fallback"]
     assert session["generation"]["fallbackUsed"] is True
     assert "Use a hoist." not in [c["text"] for c in session["cards"]]
+
+
+def test_opencare119_empty_outcomes_are_retried_once_then_left_to_try_again(
+    base_env: None, fake_models: dict[str, list], monkeypatch: pytest.MonkeyPatch  # type: ignore[type-arg]
+) -> None:
+    from careplan_ai.agents.care_plan.schemas import OutcomesOut
+
+    calls: list[int] = []
+
+    async def _empty(**_: object) -> OutcomesOut:
+        calls.append(1)
+        return OutcomesOut(outcomes=[])
+
+    with TestClient(create_app()) as client:
+        session = _start(client)
+        url = f"/care-plans/sessions/{session['sessionId']}"
+        client.post(f"{url}/cards/S1/decision", json={"decision": "add"}, headers=HEADERS)
+        monkeypatch.setattr("careplan_ai.agents.care_plan.llm.write_outcomes", _empty)
+        s = client.post(f"{url}/outcomes", headers=HEADERS).json()
+
+    assert len(calls) == 2  # tried once more before giving up
+    assert s["cards"][0]["outcome"] is None
+    # Still waiting: the UI shows "couldn't write outcomes" and Try again calls this step again.
+    assert s["outcomesToWrite"] == ["S1"]

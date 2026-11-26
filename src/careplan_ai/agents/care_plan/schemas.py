@@ -217,12 +217,18 @@ class EvidenceItem(CamelModel):
     supporting: bool = False
     # Assessment answers only (OPENCARE-98): the template flags this answer as a risk.
     risk_flagged: bool = False
+    # OPENCARE-118: "no_risk" / "info" = the question's rule says this answer is not a risk, so
+    # the model can't list it as one; None = no rule (the model may decide).
+    risk_rule: str | None = None
     # The record changed or is no longer in the backend's evidence since the AI
     # read it (agent memory keeps references, not text - agents/care_plan/stored.py).
     changed: bool = False
     # The fingerprint the record had when the AI read it - kept through every
     # load and save, so a call without the evidence can't overwrite it.
     fingerprint: str | None = Field(default=None, exclude=True)
+    # Care standard steps only (OPENCARE-115/116): the score, level or reading the step answers -
+    # cited with the step, so staff see it under Sources. Internal, never sent out.
+    backed_by: str | None = Field(default=None, exclude=True)
 
     @property
     def is_note(self) -> bool:

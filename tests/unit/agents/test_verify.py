@@ -68,11 +68,11 @@ def test_rejected_statements_are_removed_and_their_sources_come_back_word_for_wo
     assert [c.text for c in final.cards if c.origin == "ai"] == [DRAFT.actions[0].text]
     assert final.cards[0].outcome is None  # the unsupported outcome is gone
     assert final.cards[0].verification == "supported"
-    # The flagged risk S2 covered comes back in the source's own words.
-    backfilled = [c for c in final.cards if c.origin == "source_text"]
-    assert [(c.evidence_ids, c.text, c.verification) for c in backfilled] == [
-        (["A2"], "Gums: Sore", "source_text")
-    ]
+    # OPENCARE-114: the flagged risk S2 covered is not pasted back as an action - it stays a
+    # risk no card covers, so staff see it under "Not covered".
+    assert not [c for c in final.cards if c.origin == "source_text"]
+    assert "A2" in {r.evidence_id for r in final.risks}
+    assert not any("A2" in c.risk_evidence_ids for c in final.cards)
 
 
 def test_feedback_names_the_statement_and_the_words_at_fault() -> None:

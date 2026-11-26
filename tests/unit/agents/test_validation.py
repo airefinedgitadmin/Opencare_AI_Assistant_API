@@ -99,10 +99,11 @@ def test_observations_support_actions_but_are_never_required_or_superseding() ->
         assert any(p.startswith(use) for p in result.problems), use
     assert result.invalid_reference_count == 4
     assert result.not_used == []
-    # P1 is still current (its "superseding" reading doesn't count), so it is
-    # added back word for word; the reading itself never is.
+    # P1 is still current (its "superseding" reading doesn't count); the reading itself is never
+    # added back. OPENCARE-113: P1 only describes Cathy, so it is listed for staff, not an action.
     backfilled = [c.evidence_ids for c in result.cards if c.origin == CardOrigin.SOURCE_TEXT]
-    assert backfilled == [["P1"]]
+    assert backfilled == []
+    assert result.not_actions == ["Cathy is independent with her oral care."]
 
 
 def test_a_supporting_reading_never_drives_an_action_on_its_own() -> None:
@@ -161,11 +162,14 @@ def test_missed_items_are_added_back_word_for_word() -> None:
 
     result = validate_draft(EVIDENCE, draft, resident_name="Cathy")
 
+    # OPENCARE-114: only the earlier care plan line comes back word for word. The flagged answer
+    # stays a risk no card covers ("Not covered"), and the review note is listed for staff.
     backfilled = [c for c in result.cards if c.origin == CardOrigin.SOURCE_TEXT]
-    assert [c.evidence_ids for c in backfilled] == [["A2"], ["P2"], ["R1"]]
-    assert backfilled[0].text == "Oral cleanliness: Some plaque"
-    assert backfilled[0].warnings == [UNADDRESSED_RISK_WARNING]
-    assert backfilled[1].text == "She needs prompting from staff."
+    assert [c.evidence_ids for c in backfilled] == [["P2"]]
+    assert backfilled[0].text == "She needs prompting from staff."
+    assert not any(UNADDRESSED_RISK_WARNING in c.warnings for c in result.cards)
+    assert not any("A2" in c.risk_evidence_ids for c in result.cards)
+    assert len(result.not_covered) == 1 and "Review note" in result.not_covered[0]
     assert result.backfilled_count == 3
 
 
@@ -191,8 +195,10 @@ def test_supersession_must_point_at_a_real_review_note() -> None:
     result = validate_draft(EVIDENCE, draft, resident_name="Cathy")
 
     assert result.not_used == []
-    # P1 is therefore still required, and nothing cites it -> added back.
-    assert any(c.evidence_ids == ["P1"] for c in result.cards)
+    # P1 is therefore still current. OPENCARE-113: it only describes Cathy ("Cathy is independent
+    # with her oral care"), so it is listed for staff rather than added back as an action.
+    assert not any(c.evidence_ids == ["P1"] for c in result.cards)
+    assert result.not_actions == ["Cathy is independent with her oral care."]
 
 
 def test_numbers_not_in_sources_are_flagged() -> None:
@@ -234,7 +240,8 @@ def test_unclassified_review_note_counts_as_a_requirement() -> None:
 
     result = validate_draft(EVIDENCE, draft, resident_name="Cathy")
 
-    assert any(c.evidence_ids == ["R1"] for c in result.cards)
+    # OPENCARE-114: required, so listed for staff (never pasted in as an action).
+    assert any(f'"Review note: {EVIDENCE[4].text}"' in line for line in result.not_covered)
 
 
 # --- other notes (carer / nursing / professional / relative) ---
@@ -255,10 +262,14 @@ def test_note_requirements_must_be_covered() -> None:
 
     result = validate_draft(evidence, draft, resident_name="Cathy")
 
-    backfilled = [c.evidence_ids for c in result.cards if c.origin == CardOrigin.SOURCE_TEXT]
     # C1: the agent found a requirement. G1: linked to the pathway and unclassified
     # -> when unsure, show it. C2: resident-level, not a requirement -> optional.
-    assert backfilled == [["C1"], ["G1"]]
+    # OPENCARE-114: shown to staff as notices, never pasted in as actions.
+    assert not [c for c in result.cards if c.origin == CardOrigin.SOURCE_TEXT and c.evidence_ids
+                in (["C1"], ["G1"], ["C2"])]
+    assert [line.rsplit('"', 2)[-2] for line in result.not_covered if "Carer note" in line
+            or "GP note" in line] == [
+        "Carer note: Cathy said her gums were sore.", "GP note: Use a soft toothbrush."]
 
 
 def test_a_previous_action_can_be_superseded_by_any_note_type() -> None:
@@ -352,10 +363,11 @@ def test_story_scenario_detail_borrowed_from_an_example_is_dropped() -> None:
     texts = " ".join(c.text for c in result.cards)
     assert "hoist" not in texts.lower()
     assert result.copied_count == 1
-    # Style words lent by the example are fine; the dropped card's source comes back.
+    # Style words lent by the example are fine. OPENCARE-114: the dropped card's flagged answer
+    # is not pasted back as an action - it stays a risk no card covers ("Not covered").
     assert result.cards[0].text.startswith("Staff should encourage Cathy")
-    assert any(c.evidence_ids == ["A1"] and c.origin == CardOrigin.SOURCE_TEXT
-               for c in result.cards)
+    assert not any("A1" in c.risk_evidence_ids for c in result.cards)
+    assert "A1" in {r.evidence_id for r in result.risks}
     assert any("only a STYLE EXAMPLE contains (hoist)" in p for p in result.problems)
 
 

@@ -25,6 +25,9 @@ class AssessmentAnswerIn(CamelModel):
     # OPENCARE-98: the template flags this answer as a risk (a "Yes", or an option scored above 0).
     # Every flagged answer must be covered by an action, or shown as not covered.
     risk_flagged: bool = False
+    # OPENCARE-118: the question's risk rule for this answer - "risk", "no_risk" (the rule says
+    # this answer is safe), "info" (information only) or unset (no rule: the AI may decide).
+    risk_rule: Literal["risk", "no_risk", "info"] | None = None
 
 
 class AssessmentEvidenceIn(CamelModel):

@@ -186,8 +186,10 @@ def test_different_answers_with_the_same_words_stay_separate() -> None:
 
     result = validate_draft(evidence, draft, resident_name="Elspeth", with_outcomes=False)
 
-    assert [(c.text, c.evidence_ids) for c in result.cards[1:]] == [
-        ("Dentures: Yes", ["A1"]), ("Glasses: Yes", ["A2"])]
+    # OPENCARE-114: neither answer is pasted in as an action; both stay separate risks, so staff
+    # see each under "Not covered".
+    assert result.cards[1:] == []
+    assert [r.evidence_id for r in result.risks] == ["A1", "A2"]
 
 
 def test_the_draft_rules_say_earlier_plans_are_not_wording_to_copy() -> None:
