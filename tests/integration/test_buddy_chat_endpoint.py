@@ -230,3 +230,84 @@ def test_unknown_data_block_is_refused(base_env: None, fake: FakeModel) -> None:
         )
     assert response.status_code == 422
     assert fake.sent == []
+
+
+# --- A 429 (rate limited) is retried once, within the time budget (Buddy only) ---------------
+
+
+class FlakyModel(FakeModel):
+    """Fails with the given errors first, then answers."""
+
+    def __init__(self, failures: list[Exception], reply: str) -> None:
+        super().__init__(reply=reply)
+        self.failures = list(failures)
+        self.calls = 0
+
+    async def ainvoke(self, messages: list[BaseMessage]) -> AIMessage:
+        self.calls += 1
+        if self.failures:
+            self.sent = messages
+            raise self.failures.pop(0)
+        return await super().ainvoke(messages)
+
+
+def _rate_limit(retry_after: str = "0.01") -> Exception:
+    import httpx
+    import openai
+
+    request = httpx.Request("POST", "https://example")
+    return openai.RateLimitError(
+        "429",
+        response=httpx.Response(429, headers={"retry-after": retry_after}, request=request),
+        body=None,
+    )
+
+
+def _flaky(monkeypatch: pytest.MonkeyPatch, failures: list[Exception]) -> FlakyModel:
+    model = FlakyModel(failures, reply="Ewan is settled.")
+    monkeypatch.setattr(service, "get_buddy_model", lambda: model)
+    return model
+
+
+def test_rate_limited_once_is_retried_and_answers(
+    base_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = _flaky(monkeypatch, [_rate_limit()])
+    with TestClient(create_app()) as client:
+        response = client.post("/buddy/chat", json=_request("How is Ewan?"), headers=HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["answer_markdown"] == "Ewan is settled."
+    assert model.calls == 2
+
+
+def test_rate_limited_twice_gives_ai_unavailable(
+    base_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = _flaky(monkeypatch, [_rate_limit(), _rate_limit()])
+    with TestClient(create_app()) as client:
+        response = client.post("/buddy/chat", json=_request("How is Ewan?"), headers=HEADERS)
+
+    assert response.status_code == 502
+    assert model.calls == 2
+
+
+def test_other_errors_are_not_retried(base_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    model = _flaky(monkeypatch, [RuntimeError("Azure 500")])
+    with TestClient(create_app()) as client:
+        response = client.post("/buddy/chat", json=_request("How is Ewan?"), headers=HEADERS)
+
+    assert response.status_code == 502
+    assert model.calls == 1
+
+
+def test_no_retry_when_the_time_budget_would_run_out(
+    base_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CAREPLAN_AI_BUDDY_TIMEOUT_SECONDS", "6")
+    model = _flaky(monkeypatch, [_rate_limit(retry_after="4")])
+    with TestClient(create_app()) as client:
+        response = client.post("/buddy/chat", json=_request("How is Ewan?"), headers=HEADERS)
+
+    assert response.status_code == 502
+    assert model.calls == 1

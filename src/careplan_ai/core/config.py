@@ -191,6 +191,10 @@ class Settings(BaseSettings):
     buddy_max_response_tokens: int = 4000
     # The whole model call, retries included; over it the caller gets ai_unavailable.
     buddy_timeout_seconds: float = 30.0
+    # A 429 (rate limited) is retried this many times, waiting Azure's Retry-After up to the max,
+    # while the time budget above allows. Buddy only - the care plan has its own retry settings.
+    buddy_rate_limit_retries: int = Field(default=1, ge=0, le=3)
+    buddy_rate_limit_max_wait_seconds: float = Field(default=5.0, gt=0)
     # Turns of the current chat sent with each question, and sources kept from an answer.
     buddy_history_turns: int = Field(default=6, ge=0)
     buddy_max_sources: int = Field(default=5, ge=1)
