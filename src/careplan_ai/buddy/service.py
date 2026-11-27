@@ -10,6 +10,7 @@ import time
 from functools import lru_cache
 from typing import Any
 
+import openai
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import AzureChatOpenAI
 
@@ -70,15 +71,58 @@ def _text(message: BaseMessage) -> str:
     )
 
 
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    """Azure's own wait hint on a 429 (retry-after-ms / retry-after headers)."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if not headers:
+        return None
+    for name, scale in (("retry-after-ms", 0.001), ("retry-after", 1.0)):
+        value = headers.get(name)
+        if value:
+            try:
+                return float(value) * scale
+            except ValueError:
+                continue
+    return None
+
+
+# A retry needs at least this long left in the question's time budget to be worth making.
+_RETRY_MIN_LEFT_SECONDS = 5.0
+
+
+async def _invoke(messages: list[BaseMessage], request_id: str, started: float) -> BaseMessage:
+    """The model call, within the question's whole time budget. A 429 (rate limited) is retried
+    up to CAREPLAN_AI_BUDDY_RATE_LIMIT_RETRIES times, after Azure's Retry-After (capped), while
+    enough of the budget is left. Any other failure is not retried."""
+    settings = get_settings()
+    attempts = settings.buddy_rate_limit_retries + 1
+    for attempt in range(attempts):
+        remaining = settings.buddy_timeout_seconds - (time.monotonic() - started)
+        try:
+            return await asyncio.wait_for(
+                get_buddy_model().ainvoke(messages), timeout=max(remaining, 0.1)
+            )
+        except openai.RateLimitError as exc:
+            wait = min(_retry_after_seconds(exc) or 1.0, settings.buddy_rate_limit_max_wait_seconds)
+            left = settings.buddy_timeout_seconds - (time.monotonic() - started)
+            if attempt + 1 >= attempts or left - wait < _RETRY_MIN_LEFT_SECONDS:
+                raise
+            logger.warning(
+                "buddy_chat_rate_limited",
+                request_id=request_id,
+                attempt=attempt + 1,
+                wait_seconds=round(wait, 2),
+            )
+            await asyncio.sleep(wait)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 async def answer(request: BuddyChatRequest) -> BuddyChatResponse:
     settings = get_settings()
     model_id = settings.buddy_model_id or ""
     started = time.monotonic()
     try:
-        result = await asyncio.wait_for(
-            get_buddy_model().ainvoke(build_messages(request)),
-            timeout=settings.buddy_timeout_seconds,
-        )
+        result = await _invoke(build_messages(request), request.request_id, started)
     except Exception as exc:
         logger.error(
             "buddy_chat_failed",
